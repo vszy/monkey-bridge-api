@@ -205,7 +205,11 @@ class BrowserBridge:
             captured_sources.append({"url": url, "title": t})
 
         def add_image(img_url: str, link_url: Optional[str] = None):
-            if not img_url or not isinstance(img_url, str) or not img_url.startswith("http"):
+            if not img_url or not isinstance(img_url, str):
+                return
+            if img_url.startswith("/"):
+                img_url = f"https://chatgpt.com{img_url}"
+            if not img_url.startswith("http"):
                 return
             if img_url in seen_urls:
                 return
@@ -312,18 +316,40 @@ class BrowserBridge:
                     break
                 await asyncio.sleep(0.01)
 
+            # Inspect DOM for any rendered images in ChatGPT's latest assistant turn
+            if self.page_chatgpt:
+                try:
+                    dom_imgs = await self.page_chatgpt.evaluate('''() => {
+                        const msgs = Array.from(document.querySelectorAll("[data-message-author-role='assistant'], article"));
+                        if (!msgs.length) return [];
+                        const lastMsg = msgs[msgs.length - 1];
+                        return Array.from(lastMsg.querySelectorAll("img")).map(img => {
+                            const link = img.closest('a');
+                            return {
+                                src: img.src || img.getAttribute('src') || '',
+                                link: link ? link.href : null
+                            };
+                        }).filter(i => i.src && !i.src.includes('avatar') && !i.src.includes('profile') && !i.src.startsWith('data:image/svg'));
+                    }''')
+                    if isinstance(dom_imgs, list):
+                        for d in dom_imgs:
+                            add_image(d.get("src"), d.get("link"))
+                except Exception:
+                    pass
+
             # Append formatted Images and Sources/References if captured
             full_text = "".join(text_buffer)
             extra_content = ""
 
             new_images = [img for img in captured_images if img["image_url"] not in full_text and (not img.get("link_url") or img["link_url"] not in full_text)]
             if new_images:
-                extra_content += "\n\n### 📸 Images\n\n"
+                extra_content += "\n\n### 📸 Images\n\n<div class=\"image-gallery\">\n\n"
                 for img in new_images:
                     if img.get("link_url"):
                         extra_content += f"[![Image]({img['image_url']})]({img['link_url']})\n\n"
                     else:
                         extra_content += f"![Image]({img['image_url']})\n\n"
+                extra_content += "</div>\n\n"
 
             new_sources = [src for src in captured_sources if src["url"] not in full_text]
             if new_sources:

@@ -302,6 +302,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
 
+        let sseBuffer = '';
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -310,7 +311,11 @@ document.addEventListener('DOMContentLoaded', () => {
           rawResponse.innerText += chunk;
           rawResponse.scrollTop = rawResponse.scrollHeight;
 
-          const lines = chunk.split('\n');
+          sseBuffer += chunk;
+          const lines = sseBuffer.split('\n');
+          // Keep whatever is after the last newline in the buffer
+          sseBuffer = lines.pop();
+
           for (const line of lines) {
             const trimmed = line.trim();
             if (!trimmed || !trimmed.startsWith('data: ')) continue;
