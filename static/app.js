@@ -84,11 +84,28 @@ document.addEventListener('DOMContentLoaded', () => {
     window.open('https://chatgpt.com', '_blank');
   });
 
-  // Clear Chat History
-  btnClearChat.addEventListener('click', () => {
+  // Clear Screen helper
+  function clearScreen(status = 'Cleared') {
     chatHistory.innerHTML = '';
     if (emptyNotice) chatHistory.appendChild(emptyNotice);
-    statsText.innerText = 'Cleared';
+    promptInput.value = '';
+    charCount.innerText = '0 characters';
+    if (status) statsText.innerText = status;
+  }
+
+  // Clear Screen and navigate browser to a fresh screen
+  btnClearChat.addEventListener('click', async () => {
+    clearScreen('Resetting browser screen...');
+    btnClearChat.disabled = true;
+    try {
+      await fetch('/api/new-chat', { method: 'POST' });
+      statsText.innerText = 'Screen cleared & new browser screen ready';
+    } catch (e) {
+      console.error(e);
+      statsText.innerText = 'Screen cleared';
+    } finally {
+      btnClearChat.disabled = false;
+    }
   });
 
   // Clear Logs
@@ -193,6 +210,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Reset New Chat
   btnNewChat.addEventListener('click', async () => {
+    clearScreen('Resetting chat...');
     btnNewChat.disabled = true;
     btnNewChat.innerText = 'Resetting...';
     try {
@@ -200,6 +218,7 @@ document.addEventListener('DOMContentLoaded', () => {
       statsText.innerText = 'New chat created';
     } catch (e) {
       console.error(e);
+      statsText.innerText = 'Reset failed';
     } finally {
       btnNewChat.disabled = false;
       btnNewChat.innerText = 'New Chat';
@@ -208,6 +227,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Restart Browser
   btnRestartBrowser.addEventListener('click', async () => {
+    clearScreen('Restarting browser...');
     btnRestartBrowser.disabled = true;
     btnRestartBrowser.innerText = 'Restarting...';
     try {
@@ -215,6 +235,7 @@ document.addEventListener('DOMContentLoaded', () => {
       statsText.innerText = 'Browser restarted';
     } catch (e) {
       console.error(e);
+      statsText.innerText = 'Restart failed';
     } finally {
       btnRestartBrowser.disabled = false;
       btnRestartBrowser.innerText = 'Restart Browser';

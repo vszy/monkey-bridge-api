@@ -199,6 +199,21 @@ In your application's settings, configure a custom OpenAI provider:
 
 ---
 
+### Aider (Terminal AI Pair Programmer)
+
+Aider works seamlessly with Monkey Bridge by streaming code diffs directly into your repository:
+
+- **One-click launcher**:
+  ```text
+  run_aider.bat
+  ```
+- **Manual launch**:
+  ```bash
+  aider --openai-api-base http://localhost:8000/v1 --model openai/gpt-4o --no-stream
+  ```
+
+---
+
 ## ⚙️ Configuration
 
 Settings can be customized in `config.py` or via environment variables:
