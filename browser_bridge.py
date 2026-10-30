@@ -387,46 +387,64 @@ class BrowserBridge:
             }''')
 
             current_text = await self.page_chatgpt.evaluate('''() => {
-                const allElements = Array.from(document.querySelectorAll('*'));
-                const saidNodes = allElements.filter(el => {
-                    const text = el.innerText || '';
-                    return text.includes('ChatGPT said:') && el.children.length === 0;
-                });
-                let response = "";
-                if (saidNodes.length > 0) {
-                    const lastSaid = saidNodes[saidNodes.length - 1];
-                    const container = lastSaid.closest('article') || lastSaid.parentElement?.parentElement || lastSaid.parentElement;
-                    if (container) {
-                        const raw = container.innerText || '';
-                        const idx = raw.lastIndexOf('ChatGPT said:');
-                        if (idx !== -1) response = raw.substring(idx + 'ChatGPT said:'.length);
-                    }
+                // Find all assistant turns
+                const assistantTurns = Array.from(document.querySelectorAll('[data-message-author-role="assistant"]'));
+                let targetTurn = assistantTurns.length > 0 ? assistantTurns[assistantTurns.length - 1] : null;
+
+                if (!targetTurn) {
+                    const articles = Array.from(document.querySelectorAll('article')).filter(a => {
+                        return !a.querySelector('[data-message-author-role="user"]') && !!a.querySelector('.markdown, [class*="markdown"]');
+                    });
+                    if (articles.length > 0) targetTurn = articles[articles.length - 1];
                 }
-                if (!response.trim()) {
-                    const articles = Array.from(document.querySelectorAll('article, [data-message-author-role="assistant"], div.markdown'));
-                    if (articles.length > 0) response = articles[articles.length - 1].innerText || '';
-                }
-                const footers = ['ChatGPT is AI and can make mistakes.', 'Thinking'];
+
+                if (!targetTurn) return "";
+
+                // Find the markdown body inside the assistant turn
+                const md = targetTurn.querySelector('.markdown, [class*="markdown"], .whitespace-pre-wrap');
+                if (!md) return "";
+
+                // Clone so we don't mutate DOM and remove utility elements
+                const clone = md.cloneNode(true);
+                clone.querySelectorAll('.sr-only, button, [class*="action"], [class*="feedback"]').forEach(el => el.remove());
+
+                let text = clone.innerText || "";
+                
+                // Strip any accidental leading "ChatGPT said:" or "ChatGPT\n"
+                text = text.replace(/^(ChatGPT\s*said:\s*|ChatGPT\s*\n\s*)/i, '').trim();
+
+                // Remove footer boilerplate if captured
+                const footers = ['ChatGPT is AI and can make mistakes.', 'ChatGPT can make mistakes.'];
                 for (const f of footers) {
-                    if (response.includes(f)) response = response.split(f)[0];
+                    if (text.includes(f)) text = text.split(f)[0].trim();
                 }
-                return response.trim();
+
+                return text;
             }''') or ""
 
             if is_streaming or len(current_text) > 0:
                 streaming_began = True
 
-            if len(current_text) > len(previous_text):
-                delta = current_text[len(previous_text):]
-                previous_text = current_text
-                idle_cycles = 0
-                yield delta
+            if current_text and current_text != previous_text:
+                if current_text.startswith(previous_text):
+                    delta = current_text[len(previous_text):]
+                else:
+                    # Prefix changed or initial sync: find common prefix length
+                    common_len = 0
+                    min_len = min(len(previous_text), len(current_text))
+                    while common_len < min_len and previous_text[common_len] == current_text[common_len]:
+                        common_len += 1
+                    delta = current_text[common_len:]
+
+                if delta:
+                    previous_text = current_text
+                    idle_cycles = 0
+                    yield delta
             else:
                 idle_cycles += 1
 
             if streaming_began and not is_streaming and idle_cycles >= 3:
                 await asyncio.sleep(0.3)
-                final_text = await self.page_chatgpt.evaluate('() => document.body.innerText') # fallback check
                 self.log(f"ChatGPT stream complete! ({len(previous_text)} chars)")
                 break
 
