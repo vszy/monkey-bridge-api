@@ -1,0 +1,19 @@
+# Virtual environment
+venv/
+.venv/
+ENV/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# User browser data and persistent sessions (contains personal cookies/tokens)
+chatgpt_profile/
+test_profile/
+
+# Logs and temporary files
+*.log
+*.png
+.system_generated/

@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ChatGPT OpenAI API Bridge</title>
+  <link rel="stylesheet" href="/static/style.css?v=3">
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+  <!-- Top Utility Bar -->
+  <header class="navbar">
+    <div class="nav-left">
+      <span class="brand-title">ChatGPT API Bridge</span>
+      <span class="status-indicator" id="statusBadge">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusText">Checking...</span>
+      </span>
+      <span class="account-pill" id="accountBadge">
+        <span class="account-icon" id="accountIcon">👤</span>
+        <span id="accountLabel">Detecting Account...</span>
+      </span>
+      <span class="endpoint-pill">API: <code>http://localhost:8000/v1</code></span>
+    </div>
+
+    <div class="nav-actions">
+      <button class="btn btn-default" id="btnOpenChatGPT" title="Open active ChatGPT tab in browser">Open ChatGPT</button>
+      <button class="btn btn-default" id="btnNewChat" title="Start fresh conversation">New Chat</button>
+      <button class="btn btn-default" id="btnRestartBrowser" title="Restart browser session">Restart Browser</button>
+    </div>
+  </header>
+
+  <!-- Main Functional Layout -->
+  <div class="app-layout">
+    <!-- Left: Playground & Request Controls -->
+    <main class="chat-section">
+      <!-- Functional Parameters Bar -->
+      <div class="param-bar">
+        <div class="param-item">
+          <label for="modelSelect">Model</label>
+          <select id="modelSelect">
+            <option value="gpt-4o" selected>gpt-4o</option>
+            <option value="gpt-4o-mini">gpt-4o-mini</option>
+            <option value="chatgpt-web">chatgpt-web</option>
+            <option value="o1-preview">o1-preview</option>
+          </select>
+        </div>
+
+        <div class="param-item checkbox-item">
+          <label>
+            <input type="checkbox" id="streamToggle" checked>
+            Stream (SSE)
+          </label>
+        </div>
+
+        <div class="param-item checkbox-item">
+          <label>
+            <input type="checkbox" id="autoNewChatToggle">
+            New chat per request
+          </label>
+        </div>
+
+        <div class="param-spacer"></div>
+
+        <div class="param-item">
+          <span class="metric-text" id="statsText">Ready</span>
+        </div>
+        <button class="btn btn-sm btn-subtle" id="btnClearChat">Clear Screen</button>
+      </div>
+
+      <!-- System Prompt -->
+      <div class="system-section">
+        <label for="systemPrompt">System Message:</label>
+        <input type="text" id="systemPrompt" placeholder="Optional system instruction (e.g. You are a helpful assistant)...">
+      </div>
+
+      <!-- Messages Stream View -->
+      <div class="chat-history" id="chatHistory">
+        <div class="system-notice" id="emptyNotice">
+          <strong>Ready for testing.</strong> Type a prompt below or send an HTTP POST request to <code>http://localhost:8000/v1/chat/completions</code>.
+        </div>
+      </div>
+
+      <!-- Input Area -->
+      <div class="input-panel">
+        <textarea id="promptInput" placeholder="Enter user prompt... (Press Enter to send, Shift+Enter for new line)" rows="3"></textarea>
+        <div class="input-controls">
+          <span class="char-count" id="charCount">0 characters</span>
+          <button class="btn btn-primary" id="btnSend">Send (Enter)</button>
+        </div>
+      </div>
+    </main>
+
+    <!-- Right: Raw Request/Response & System Logs Inspector -->
+    <aside class="tools-section">
+      <!-- Account Details Box -->
+      <div class="account-card">
+        <div class="account-card-header">
+          <span class="account-title">ChatGPT Account State</span>
+          <button class="btn btn-xs" id="btnRefreshAccount">Refresh</button>
+        </div>
+        <div class="account-grid">
+          <div class="account-field">
+            <span class="field-label">Status:</span>
+            <span class="field-val" id="accStatusVal">Detecting...</span>
+          </div>
+          <div class="account-field">
+            <span class="field-label">Account:</span>
+            <span class="field-val" id="accUserVal">-</span>
+          </div>
+          <div class="account-field">
+            <span class="field-label">Plan Tier:</span>
+            <span class="field-val" id="accPlanVal">-</span>
+          </div>
+        </div>
+        <div class="account-hint" id="accHint">
+          💡 <strong>Guest Mode:</strong> Prompts run anonymously. To use your Plus account, click <em>Open ChatGPT</em> and log in once.
+        </div>
+      </div>
+
+      <div class="tabs-nav">
+        <button class="tab-btn active" data-tab="inspector">Raw Inspector</button>
+        <button class="tab-btn" data-tab="curl">cURL & Python</button>
+        <button class="tab-btn" data-tab="logs">Server Logs</button>
+      </div>
+
+      <!-- Tab: Raw Request / Response Inspector -->
+      <div class="tab-pane active" id="paneInspector">
+        <div class="pane-group">
+          <div class="pane-header">
+            <span>Last Request JSON</span>
+            <button class="btn btn-xs" id="btnCopyRequest">Copy</button>
+          </div>
+          <pre class="code-box"><code id="rawRequest">{
+  "model": "gpt-4o",
+  "messages": [],
+  "stream": true
+}</code></pre>
+        </div>
+
+        <div class="pane-group" style="flex: 1;">
+          <div class="pane-header">
+            <span>Last Response Payload / SSE Chunks</span>
+            <button class="btn btn-xs" id="btnCopyResponse">Copy</button>
+          </div>
+          <pre class="code-box" style="flex: 1;"><code id="rawResponse">// Response payload will appear here...</code></pre>
+        </div>
+      </div>
+
+      <!-- Tab: Client Snippets -->
+      <div class="tab-pane" id="paneCurl">
+        <div class="pane-group">
+          <div class="pane-header">
+            <span>Python (OpenAI SDK)</span>
+            <button class="btn btn-xs copy-btn" data-target="snippetPython">Copy</button>
+          </div>
+          <pre class="code-box"><code id="snippetPython">from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8000/v1",
+    api_key="not-needed"
+)
+
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Hello!"}],
+    stream=True
+)
+
+for chunk in response:
+    print(chunk.choices[0].delta.content or "", end="")</code></pre>
+        </div>
+
+        <div class="pane-group">
+          <div class="pane-header">
+            <span>cURL Command</span>
+            <button class="btn btn-xs copy-btn" data-target="snippetCurl">Copy</button>
+          </div>
+          <pre class="code-box"><code id="snippetCurl">curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4o",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "stream": false
+  }'</code></pre>
+        </div>
+      </div>
+
+      <!-- Tab: Server Logs -->
+      <div class="tab-pane" id="paneLogs">
+        <div class="pane-header">
+          <span>Bridge Activity Stream</span>
+          <button class="btn btn-xs" id="btnClearLogs">Clear</button>
+        </div>
+        <div class="logs-container" id="logsContainer">
+          <div class="log-entry">[System] Bridge server running.</div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <script src="/static/app.js?v=3"></script>
+</body>
+</html>
