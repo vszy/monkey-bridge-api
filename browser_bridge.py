@@ -3,12 +3,27 @@ import json
 import logging
 import os
 import time
+import urllib.parse
 from typing import AsyncGenerator, Optional, List, Dict, Any
 from playwright.async_api import async_playwright, BrowserContext, Page, Playwright
 import config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("ChatGPTBridge")
+
+def format_url_title(url: str) -> str:
+    try:
+        parsed = urllib.parse.urlparse(url)
+        domain = parsed.netloc.replace("www.", "")
+        path_slug = parsed.path.strip("/").split("/")[-1]
+        if path_slug:
+            slug_clean = path_slug.replace("-", " ").replace("_", " ").title()
+            if len(slug_clean) > 40:
+                slug_clean = slug_clean[:40] + "..."
+            return f"{domain}: {slug_clean}"
+        return domain or url
+    except Exception:
+        return url
 
 class BrowserBridge:
     def __init__(self):
@@ -168,8 +183,35 @@ class BrowserBridge:
                 self._current_network_queue.put_nowait(None)
 
     async def _consume_cdp_stream(self, handle: str):
-        """Streams and parses chunked SSE deltas directly from the CDP stream."""
+        """Streams and parses chunked SSE deltas directly from the CDP stream,
+        capturing text deltas, images, citations, and reference links."""
         buffer = ""
+        seen_urls = set()
+        captured_sources = []
+        captured_images = []
+        text_buffer = []
+
+        def add_source(url: str, title: Optional[str] = None):
+            if not url or not isinstance(url, str) or not url.startswith("http"):
+                return
+            # Skip internal OpenAI image delivery CDNs from references list
+            if any(cdn in url for cdn in ["images.openai.com", "oaistatic.com", "oaiusercontent.com"]):
+                return
+            base_url = url.split("?")[0] if "utm_source" in url else url
+            if base_url in seen_urls:
+                return
+            seen_urls.add(base_url)
+            t = title or format_url_title(url)
+            captured_sources.append({"url": url, "title": t})
+
+        def add_image(img_url: str, link_url: Optional[str] = None):
+            if not img_url or not isinstance(img_url, str) or not img_url.startswith("http"):
+                return
+            if img_url in seen_urls:
+                return
+            seen_urls.add(img_url)
+            captured_images.append({"image_url": img_url, "link_url": link_url})
+
         try:
             while True:
                 chunk_res = await self.cdp.send("IO.read", {"handle": handle, "size": 32768})
@@ -194,6 +236,21 @@ class BrowserBridge:
                                     eof = True
                                     break
 
+                                # Check direct message metadata (citations, content_references)
+                                msg_obj = obj.get("message", {})
+                                if isinstance(msg_obj, dict):
+                                    meta = msg_obj.get("metadata", {})
+                                    for ref in meta.get("content_references", []):
+                                        if isinstance(ref, dict):
+                                            for u in ref.get("safe_urls", []):
+                                                add_source(u)
+                                            if ref.get("url"):
+                                                add_source(ref["url"], ref.get("title"))
+                                    for cit in meta.get("citations", []):
+                                        if isinstance(cit, dict):
+                                            c_meta = cit.get("metadata", {})
+                                            add_source(c_meta.get("url"), c_meta.get("title"))
+
                                 patches = []
                                 if "v" in obj and isinstance(obj["v"], list):
                                     patches.extend(obj["v"])
@@ -201,16 +258,82 @@ class BrowserBridge:
                                     patches.extend(obj["v"])
 
                                 for p in patches:
-                                    if isinstance(p, dict) and p.get("p", "").startswith("/message/content/parts") and p.get("o") == "append":
-                                        v = p.get("v")
-                                        if isinstance(v, str) and v and self._current_network_queue:
-                                            self._current_network_queue.put_nowait(v)
+                                    if not isinstance(p, dict):
+                                        continue
+                                    path = p.get("p", "")
+                                    val = p.get("v")
+
+                                    # 1. Text deltas
+                                    if path.startswith("/message/content/parts") and p.get("o") == "append":
+                                        if isinstance(val, str) and val:
+                                            text_buffer.append(val)
+                                            if self._current_network_queue:
+                                                self._current_network_queue.put_nowait(val)
+
+                                    # 2. Reference links & safe_urls
+                                    elif "safe_urls" in path:
+                                        if isinstance(val, list):
+                                            for u in val:
+                                                add_source(u)
+                                        elif isinstance(val, str):
+                                            add_source(val)
+                                    elif "content_references" in path:
+                                        if isinstance(val, list):
+                                            for ref in val:
+                                                if isinstance(ref, dict):
+                                                    for u in ref.get("safe_urls", []):
+                                                        add_source(u)
+                                                    if ref.get("url"):
+                                                        add_source(ref["url"], ref.get("title"))
+
+                                    # 3. Images from search or image generator
+                                    elif "images" in path and val:
+                                        if isinstance(val, list):
+                                            for img in val:
+                                                if isinstance(img, dict):
+                                                    c_url = img.get("content_url") or img.get("url")
+                                                    src_url = img.get("url") if img.get("content_url") else None
+                                                    if c_url:
+                                                        add_image(c_url, src_url)
+                                        elif isinstance(val, dict):
+                                            c_url = val.get("content_url") or val.get("url")
+                                            if c_url:
+                                                add_image(c_url, val.get("url"))
+
+                                    # 4. Direct image asset pointers
+                                    elif isinstance(val, dict) and val.get("content_type") == "image_asset_pointer":
+                                        c_url = val.get("content_url") or val.get("asset_pointer")
+                                        if c_url:
+                                            add_image(c_url)
                         except Exception:
                             pass
 
                 if eof:
                     break
                 await asyncio.sleep(0.01)
+
+            # Append formatted Images and Sources/References if captured
+            full_text = "".join(text_buffer)
+            extra_content = ""
+
+            new_images = [img for img in captured_images if img["image_url"] not in full_text and (not img.get("link_url") or img["link_url"] not in full_text)]
+            if new_images:
+                extra_content += "\n\n### 📸 Images\n\n"
+                for img in new_images:
+                    if img.get("link_url"):
+                        extra_content += f"[![Image]({img['image_url']})]({img['link_url']})\n\n"
+                    else:
+                        extra_content += f"![Image]({img['image_url']})\n\n"
+
+            new_sources = [src for src in captured_sources if src["url"] not in full_text]
+            if new_sources:
+                extra_content += "\n\n### 🔗 Sources & References\n\n"
+                for src in new_sources:
+                    extra_content += f"- [{src['title']}]({src['url']})\n"
+
+            if extra_content and self._current_network_queue:
+                self._current_network_queue.put_nowait(extra_content)
+
         except Exception as e:
             self.log(f"Stream consumer error: {e}", "WARNING")
         finally:
