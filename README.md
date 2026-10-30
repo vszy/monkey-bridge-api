@@ -98,7 +98,7 @@ stop.bat
 
 1. **Clone or Navigate to the directory**:
    ```bash
-   cd e:\AI\chatgpt
+   cd e:\AI\monkey-bridge-api
    ```
 
 2. **Create and Activate Virtual Environment**:

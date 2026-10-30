@@ -40,7 +40,7 @@ AVAILABLE_MODELS = [
         "id": "chatgpt-web",
         "object": "model",
         "created": 1715367049,
-        "owned_by": "chatgpt-bridge"
+        "owned_by": "monkey-bridge"
     },
     {
         "id": "o1-preview",
