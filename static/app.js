@@ -122,9 +122,6 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
   }
-      }
-    }
-  }
 
   // Refresh Account Button
   btnRefreshAccount.addEventListener('click', async () => {
