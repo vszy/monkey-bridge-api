@@ -4,7 +4,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const statusText = document.getElementById('statusText');
   const statsText = document.getElementById('statsText');
   const btnOpenChatGPT = document.getElementById('btnOpenChatGPT');
-  const btnOpenGemini = document.getElementById('btnOpenGemini');
   const btnNewChat = document.getElementById('btnNewChat');
   const btnRestartBrowser = document.getElementById('btnRestartBrowser');
   const btnClearChat = document.getElementById('btnClearChat');
@@ -14,11 +13,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const accountIcon = document.getElementById('accountIcon');
   const accountLabel = document.getElementById('accountLabel');
   const accChatgptVal = document.getElementById('accChatgptVal');
-  const accGeminiVal = document.getElementById('accGeminiVal');
   const accHint = document.getElementById('accHint');
   const btnRefreshAccount = document.getElementById('btnRefreshAccount');
 
-  const providerSelect = document.getElementById('providerSelect');
   const modelSelect = document.getElementById('modelSelect');
   const streamToggle = document.getElementById('streamToggle');
   const autoNewChatToggle = document.getElementById('autoNewChatToggle');
@@ -82,37 +79,10 @@ document.addEventListener('DOMContentLoaded', () => {
     setTimeout(() => btnCopyResponse.innerText = 'Copy', 1500);
   });
 
-  // Open ChatGPT & Gemini in new tabs
+  // Open ChatGPT in new tab
   btnOpenChatGPT.addEventListener('click', () => {
     window.open('https://chatgpt.com', '_blank');
   });
-  if (btnOpenGemini) {
-    btnOpenGemini.addEventListener('click', () => {
-      window.open('https://gemini.google.com/app', '_blank');
-    });
-  }
-
-  // Provider & Model Synchronization
-  if (providerSelect && modelSelect) {
-    providerSelect.addEventListener('change', () => {
-      const p = providerSelect.value;
-      const m = modelSelect.value;
-      if (p === 'chatgpt' && m.startsWith('gemini')) {
-        modelSelect.value = 'gpt-4o';
-      } else if (p === 'gemini' && !m.startsWith('gemini')) {
-        modelSelect.value = 'gemini-2.0-flash';
-      }
-    });
-
-    modelSelect.addEventListener('change', () => {
-      const m = modelSelect.value;
-      if (m.startsWith('gemini') && providerSelect.value === 'chatgpt') {
-        providerSelect.value = 'gemini';
-      } else if (!m.startsWith('gemini') && providerSelect.value === 'gemini') {
-        providerSelect.value = 'chatgpt';
-      }
-    });
-  }
 
   // Clear Chat History
   btnClearChat.addEventListener('click', () => {
@@ -126,11 +96,10 @@ document.addEventListener('DOMContentLoaded', () => {
     logsContainer.innerHTML = '';
   });
 
-  // Update Account UI for both ChatGPT and Google Gemini
+  // Update Account UI for ChatGPT
   function updateAccountUI(data) {
     if (!data) return;
     const chatgpt = data.chatgpt || (data.is_logged_in !== undefined ? data : null);
-    const gemini = data.gemini;
 
     if (chatgpt && accChatgptVal) {
       if (chatgpt.is_logged_in) {
@@ -140,17 +109,9 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
 
-    if (gemini && accGeminiVal) {
-      if (gemini.is_logged_in) {
-        accGeminiVal.innerHTML = `<span style="color: var(--success); font-weight: 600;">✓ Logged In</span> (${gemini.email || gemini.name || 'Google Account'})`;
-      } else {
-        accGeminiVal.innerHTML = `<span style="color: var(--text-muted);">Not Logged In</span>`;
-      }
-    }
-
-    const anyLoggedIn = (chatgpt && chatgpt.is_logged_in) || (gemini && gemini.is_logged_in);
+    const isLoggedIn = chatgpt && chatgpt.is_logged_in;
     if (accountBadge) {
-      if (anyLoggedIn) {
+      if (isLoggedIn) {
         accountBadge.className = 'account-pill logged-in';
         accountIcon.innerText = '✅';
         accountLabel.innerText = 'Session Active';
@@ -158,6 +119,9 @@ document.addEventListener('DOMContentLoaded', () => {
         accountBadge.className = 'account-pill guest';
         accountIcon.innerText = '👤';
         accountLabel.innerText = 'Guest Mode';
+      }
+    }
+  }
       }
     }
   }
@@ -235,9 +199,8 @@ document.addEventListener('DOMContentLoaded', () => {
     btnNewChat.disabled = true;
     btnNewChat.innerText = 'Resetting...';
     try {
-      const p = providerSelect ? providerSelect.value : 'both';
-      await fetch(`/api/new-chat?provider=${p}`, { method: 'POST' });
-      statsText.innerText = `New chat created (${p})`;
+      await fetch('/api/new-chat', { method: 'POST' });
+      statsText.innerText = 'New chat created';
     } catch (e) {
       console.error(e);
     } finally {
@@ -271,10 +234,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const author = document.createElement('div');
     author.className = 'message-author';
-    const activeProvider = (providerSelect && providerSelect.value !== 'auto')
-      ? providerSelect.value.toUpperCase()
-      : (modelSelect.value.startsWith('gemini') ? 'GEMINI' : 'CHATGPT');
-    author.innerText = role === 'user' ? 'USER' : `ASSISTANT (${modelSelect.value} via ${activeProvider})`;
+    author.innerText = role === 'user' ? 'USER' : `ASSISTANT (${modelSelect.value})`;
 
     const body = document.createElement('div');
     body.className = 'message-body';
@@ -296,7 +256,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const model = modelSelect.value;
     const isStream = streamToggle.checked;
     const isNewChat = autoNewChatToggle.checked;
-    const p = providerSelect && providerSelect.value !== 'auto' ? providerSelect.value : undefined;
 
     appendMessage('user', text);
     promptInput.value = '';
@@ -314,8 +273,7 @@ document.addEventListener('DOMContentLoaded', () => {
       model: model,
       messages: messages,
       stream: isStream,
-      new_chat: isNewChat,
-      ...(p ? { provider: p } : {})
+      new_chat: isNewChat
     };
 
     // Update Raw Request Inspector

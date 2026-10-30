@@ -25,7 +25,6 @@
 
     <div class="nav-actions">
       <button class="btn btn-default" id="btnOpenChatGPT" title="Open ChatGPT in browser">Open ChatGPT</button>
-      <button class="btn btn-default" id="btnOpenGemini" title="Open Google Gemini in browser">Open Gemini</button>
       <button class="btn btn-default" id="btnNewChat" title="Start fresh conversation">New Chat</button>
       <button class="btn btn-default" id="btnRestartBrowser" title="Restart browser session">Restart</button>
     </div>
@@ -38,29 +37,12 @@
       <!-- Functional Parameters Bar -->
       <div class="param-bar">
         <div class="param-item">
-          <label for="providerSelect">Engine</label>
-          <select id="providerSelect">
-            <option value="auto" selected>Auto</option>
-            <option value="chatgpt">ChatGPT</option>
-            <option value="gemini">Gemini</option>
-          </select>
-        </div>
-
-        <div class="param-item">
           <label for="modelSelect">Model</label>
           <select id="modelSelect">
-            <optgroup label="ChatGPT">
-              <option value="gpt-4o" selected>gpt-4o</option>
-              <option value="gpt-4o-mini">gpt-4o-mini</option>
-              <option value="chatgpt-web">chatgpt-web</option>
-              <option value="o1-preview">o1-preview</option>
-            </optgroup>
-            <optgroup label="Google Gemini">
-              <option value="gemini-2.0-flash">gemini-2.0-flash</option>
-              <option value="gemini-1.5-pro">gemini-1.5-pro</option>
-              <option value="gemini-1.5-flash">gemini-1.5-flash</option>
-              <option value="gemini-web">gemini-web</option>
-            </optgroup>
+            <option value="gpt-4o" selected>gpt-4o</option>
+            <option value="gpt-4o-mini">gpt-4o-mini</option>
+            <option value="chatgpt-web">chatgpt-web</option>
+            <option value="o1-preview">o1-preview</option>
           </select>
         </div>
 
@@ -114,7 +96,7 @@
       <!-- Account Details Box -->
       <div class="account-card">
         <div class="account-card-header">
-          <span class="account-title">Web Session Accounts</span>
+          <span class="account-title">ChatGPT Account</span>
           <button class="btn btn-xs" id="btnRefreshAccount">Refresh</button>
         </div>
         <div class="account-grid">
@@ -122,13 +104,9 @@
             <span class="field-label">ChatGPT:</span>
             <span class="field-val" id="accChatgptVal">Detecting...</span>
           </div>
-          <div class="account-field">
-            <span class="field-label">Google Gemini:</span>
-            <span class="field-val" id="accGeminiVal">Detecting...</span>
-          </div>
         </div>
         <div class="account-hint" id="accHint">
-          💡 Use <strong>Open ChatGPT</strong> or <strong>Open Gemini</strong> to sign in once. Profiles and sessions are saved permanently.
+          💡 Use <strong>Open ChatGPT</strong> to sign in once. Profiles and sessions are saved permanently.
         </div>
       </div>
 

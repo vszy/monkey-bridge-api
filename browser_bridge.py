@@ -14,7 +14,6 @@ class BrowserBridge:
         self.playwright: Optional[Playwright] = None
         self.context: Optional[BrowserContext] = None
         self.page_chatgpt: Optional[Page] = None
-        self.page_gemini: Optional[Page] = None
         self._lock = asyncio.Lock()
         self._is_busy = False
         self._initialized = False
@@ -27,14 +26,6 @@ class BrowserBridge:
                 "name": "Anonymous (Guest)",
                 "email": "None",
                 "plan": "Free Web Tier (Guest)"
-            },
-            "gemini": {
-                "is_logged_in": False,
-                "type": "Guest",
-                "label": "Guest Mode (Not Logged In)",
-                "name": "Anonymous (Google Guest)",
-                "email": "None",
-                "plan": "Free Web Tier"
             }
         }
 
@@ -59,21 +50,12 @@ class BrowserBridge:
             "busy": self._is_busy,
             "accounts": self._accounts,
             "urls": {
-                "chatgpt": self.page_chatgpt.url if self.page_chatgpt else None,
-                "gemini": self.page_gemini.url if self.page_gemini else None
+                "chatgpt": self.page_chatgpt.url if self.page_chatgpt else None
             },
             "logs": self._recent_logs[-30:]
         }
 
     def resolve_provider(self, model: str = "", explicit_provider: Optional[str] = None) -> str:
-        if explicit_provider:
-            p = explicit_provider.lower().strip()
-            if "gemini" in p or "google" in p:
-                return "gemini"
-            return "chatgpt"
-        m = (model or "").lower().strip()
-        if "gemini" in m or m.startswith("google"):
-            return "gemini"
         return "chatgpt"
 
     async def initialize(self):
@@ -126,14 +108,9 @@ class BrowserBridge:
             await self.page_chatgpt.goto(config.CHATGPT_URL, wait_until="domcontentloaded", timeout=60000)
             await self._dismiss_chatgpt_dialogs()
 
-            # Pre-initialize Gemini page
-            self.page_gemini = await self.context.new_page()
-            self.log("Preloading Gemini (gemini.google.com)...")
-            await self.page_gemini.goto(config.GEMINI_URL, wait_until="domcontentloaded", timeout=60000)
-
             self._initialized = True
             await self.update_all_accounts()
-            self.log("Both ChatGPT and Google Gemini interfaces ready!")
+            self.log("ChatGPT interface ready!")
 
         except Exception as e:
             self.log(f"Browser startup error: {str(e)}", "ERROR")
@@ -143,12 +120,8 @@ class BrowserBridge:
     # ------------------ Account State Detection ------------------
 
     async def update_all_accounts(self) -> Dict[str, Any]:
-        """Scans account states for both ChatGPT and Google Gemini."""
-        await asyncio.gather(
-            self.update_chatgpt_account(),
-            self.update_gemini_account(),
-            return_exceptions=True
-        )
+        """Scans account state for ChatGPT."""
+        await self.update_chatgpt_account()
         return self._accounts
 
     async def update_chatgpt_account(self) -> Dict[str, Any]:
@@ -201,52 +174,6 @@ class BrowserBridge:
             return info
         except Exception:
             return self._accounts["chatgpt"]
-
-    async def update_gemini_account(self) -> Dict[str, Any]:
-        if not self.page_gemini or self.page_gemini.is_closed():
-            return self._accounts["gemini"]
-        try:
-            info = await self.page_gemini.evaluate('''() => {
-                // Check for Google Sign-in button
-                const signInBtns = Array.from(document.querySelectorAll('a, button')).filter(el => {
-                    const txt = el.innerText?.trim();
-                    return txt === 'Sign in' || txt === 'Sign In';
-                });
-
-                // Google account avatar / profile in top right
-                const profileBtn = document.querySelector('a[aria-label*="Google Account" i], button[aria-label*="Google Account" i], [aria-label*="Google Account" i]');
-                const isLogged = !signInBtns.length || !!profileBtn;
-
-                let name = null;
-                let email = null;
-                if (profileBtn) {
-                    const aria = profileBtn.getAttribute('aria-label') || '';
-                    name = aria.replace('Google Account:', '').trim();
-                }
-
-                if (!isLogged) {
-                    return {
-                        is_logged_in: false,
-                        type: "Guest",
-                        label: "Guest Mode (Not Logged In)",
-                        name: "Anonymous (Google Guest)",
-                        email: "None",
-                        plan: "Free Web Tier"
-                    };
-                }
-                return {
-                    is_logged_in: true,
-                    type: "Logged In",
-                    label: `Google Account (${name || 'Logged In'})`,
-                    name: name || "Google Account",
-                    email: email || "Active Session",
-                    plan: "Gemini Standard / Advanced"
-                };
-            }''')
-            self._accounts["gemini"] = info
-            return info
-        except Exception:
-            return self._accounts["gemini"]
 
     # ------------------ Message Formatting ------------------
 
@@ -483,126 +410,13 @@ class BrowserBridge:
                 self.log("ChatGPT: No activity detected after prompt.", "WARNING")
                 break
 
-    # ------------------ Gemini Automation ------------------
+    # ------------------ Execution & Dispatcher ------------------
 
-    async def _get_gemini_composer(self):
-        selectors = [
-            "rich-textarea .ql-editor",
-            "div[contenteditable='true']",
-            "div.ql-editor",
-            "rich-textarea textarea",
-            "rich-textarea"
-        ]
-        for sel in selectors:
-            try:
-                el = await self.page_gemini.query_selector(sel)
-                if el and await el.is_visible():
-                    return el
-            except Exception:
-                pass
-        try:
-            return await self.page_gemini.wait_for_selector(", ".join(selectors), timeout=8000, state="visible")
-        except Exception:
-            return None
-
-    async def _stream_gemini(self, prompt: str, new_chat: bool) -> AsyncGenerator[str, None]:
-        if not self.page_gemini or self.page_gemini.is_closed():
-            self.page_gemini = await self.context.new_page()
-            await self.page_gemini.goto(config.GEMINI_URL, wait_until="networkidle")
-
-        if new_chat:
-            self.log("Gemini: starting new chat...")
-            try:
-                new_btn = await self.page_gemini.query_selector("a[href='/app'], button[aria-label*='New chat' i], button:has-text('New chat')")
-                if new_btn and await new_btn.is_visible():
-                    await new_btn.click()
-                else:
-                    await self.page_gemini.goto(config.GEMINI_URL, wait_until="domcontentloaded")
-                await asyncio.sleep(0.8)
-            except Exception:
-                pass
-
-        composer = await self._get_gemini_composer()
-        if not composer:
-            await self.page_gemini.goto(config.GEMINI_URL, wait_until="networkidle")
-            composer = await self._get_gemini_composer()
-            if not composer:
-                raise RuntimeError("Could not find Google Gemini input composer.")
-
-        self.log(f"Gemini: sending prompt ({len(prompt)} chars)...")
-        await composer.click()
-
-        # Fast injection into Quill editor for Gemini
-        await self.page_gemini.evaluate('''(text) => {
-            const el = document.querySelector('rich-textarea .ql-editor, div.ql-editor, [contenteditable="true"]');
-            if (el) {
-                el.focus();
-                el.innerText = text;
-                el.dispatchEvent(new Event('input', { bubbles: true }));
-            }
-        }''', prompt)
-        await asyncio.sleep(0.3)
-
-        # Click send or press Enter
-        send_btn = await self.page_gemini.query_selector("button[aria-label*='Send' i], button[aria-label*='Submit' i], button.send-button")
-        if send_btn and await send_btn.is_visible():
-            await send_btn.click()
-        else:
-            await self.page_gemini.keyboard.press("Enter")
-
-        self.log("Gemini: prompt submitted. Streaming response...")
-        previous_text = ""
-        start_time = time.time()
-        timeout = config.REQUEST_TIMEOUT
-        streaming_began = False
-        idle_cycles = 0
-
-        while time.time() - start_time < timeout:
-            await asyncio.sleep(config.STREAM_POLL_INTERVAL)
-            is_streaming = await self.page_gemini.evaluate('''() => {
-                const stopBtn = document.querySelector('button[aria-label*="Stop" i], button.stop-button');
-                return !!stopBtn;
-            }''')
-
-            current_text = await self.page_gemini.evaluate('''() => {
-                const responses = Array.from(document.querySelectorAll('message-content, .model-response-text, .response-container-content, model-response'));
-                if (responses.length > 0) {
-                    return responses[responses.length - 1].innerText || '';
-                }
-                return '';
-            }''') or ""
-
-            if is_streaming or len(current_text) > 0:
-                streaming_began = True
-
-            if len(current_text) > len(previous_text):
-                delta = current_text[len(previous_text):]
-                previous_text = current_text
-                idle_cycles = 0
-                yield delta
-            else:
-                idle_cycles += 1
-
-            if streaming_began and not is_streaming and idle_cycles >= 3:
-                self.log(f"Gemini stream complete! ({len(previous_text)} chars)")
-                break
-
-            if not streaming_began and idle_cycles > 40:
-                self.log("Gemini: No activity detected after prompt.", "WARNING")
-                break
-
-    # ------------------ Unified Dispatcher ------------------
-
-    async def new_chat(self, provider: str = "both"):
-        """Resets conversation for specified provider or both."""
-        if provider in ("chatgpt", "both") and self.page_chatgpt:
+    async def new_chat(self):
+        """Resets ChatGPT conversation."""
+        if self.page_chatgpt:
             try:
                 await self.page_chatgpt.goto(config.CHATGPT_URL, wait_until="domcontentloaded")
-            except Exception:
-                pass
-        if provider in ("gemini", "both") and self.page_gemini:
-            try:
-                await self.page_gemini.goto(config.GEMINI_URL, wait_until="domcontentloaded")
             except Exception:
                 pass
 
@@ -631,22 +445,16 @@ class BrowserBridge:
         provider: Optional[str] = None,
         new_chat: bool = True
     ) -> AsyncGenerator[str, None]:
-        """Unified streaming generator routing to ChatGPT or Gemini."""
+        """Streaming generator for ChatGPT."""
         async with self._lock:
             self._is_busy = True
             try:
                 if not self._initialized or not self.context:
                     await self._start_browser()
 
-                chosen_provider = self.resolve_provider(model, provider)
-                self.log(f"Routing request to provider: [{chosen_provider.upper()}] (Model: {model})")
-
-                if chosen_provider == "gemini":
-                    async for chunk in self._stream_gemini(prompt, new_chat):
-                        yield chunk
-                else:
-                    async for chunk in self._stream_chatgpt(prompt, new_chat):
-                        yield chunk
+                self.log(f"Processing request with ChatGPT (Model: {model})")
+                async for chunk in self._stream_chatgpt(prompt, new_chat):
+                    yield chunk
 
             except Exception as e:
                 self.log(f"Exception during completion: {str(e)}", "ERROR")
@@ -667,7 +475,6 @@ class BrowserBridge:
             finally:
                 self.context = None
                 self.page_chatgpt = None
-                self.page_gemini = None
                 self.playwright = None
                 self._initialized = False
 

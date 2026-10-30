@@ -88,14 +88,14 @@ async def health_check():
 
 @app.get("/api/account")
 async def get_account_info():
-    """Returns detailed ChatGPT and Google Gemini account status."""
+    """Returns detailed ChatGPT account status."""
     return await bridge.update_all_accounts()
 
 @app.post("/api/new-chat")
-async def api_new_chat(provider: str = "both"):
+async def api_new_chat():
     """Manually resets the browser to a clean new chat."""
-    await bridge.new_chat(provider=provider)
-    return {"status": "success", "message": f"New chat initialized for {provider}."}
+    await bridge.new_chat()
+    return {"status": "success", "message": "New chat initialized."}
 
 @app.post("/api/restart-browser")
 async def api_restart_browser():
@@ -119,7 +119,7 @@ async def get_model(model_id: str):
         "id": model_id,
         "object": "model",
         "created": 1715367049,
-        "owned_by": "openai" if not "gemini" in model_id.lower() else "google"
+        "owned_by": "openai"
     }
 
 @app.post("/v1/chat/completions")

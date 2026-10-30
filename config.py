@@ -17,7 +17,6 @@ CDP_URL = os.getenv("CDP_URL", None)
 
 # URLs
 CHATGPT_URL = "https://chatgpt.com"
-GEMINI_URL = "https://gemini.google.com/app"
 
 # Timeout settings
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", 120))  # seconds
@@ -25,7 +24,6 @@ STREAM_POLL_INTERVAL = 0.2  # seconds
 
 # Available models advertised in /v1/models
 AVAILABLE_MODELS = [
-    # ChatGPT Models
     {
         "id": "gpt-4o",
         "object": "model",
@@ -49,30 +47,5 @@ AVAILABLE_MODELS = [
         "object": "model",
         "created": 1725367049,
         "owned_by": "openai"
-    },
-    # Google Gemini Models
-    {
-        "id": "gemini-2.0-flash",
-        "object": "model",
-        "created": 1734000000,
-        "owned_by": "google"
-    },
-    {
-        "id": "gemini-1.5-pro",
-        "object": "model",
-        "created": 1715367049,
-        "owned_by": "google"
-    },
-    {
-        "id": "gemini-1.5-flash",
-        "object": "model",
-        "created": 1715367049,
-        "owned_by": "google"
-    },
-    {
-        "id": "gemini-web",
-        "object": "model",
-        "created": 1715367049,
-        "owned_by": "google"
     }
 ]
