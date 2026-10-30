@@ -1,19 +1,82 @@
-# Virtual environment
+# ==========================================
+# Sensitive Data, Secrets & Environment Files
+# ==========================================
+.env
+.env.*
+*.env
+*.pem
+*.key
+*.pkcs12
+*.pfx
+*.cert
+*.crt
+id_rsa*
+secrets/
+
+# ==========================================
+# Browser User Data & Session Profiles
+# (Contains personal logins, session cookies, local storage)
+# ==========================================
+chatgpt_profile/
+test_profile/
+chrome_profile/
+*_profile/
+user_data/
+profile/
+*.session
+*.cookies
+cookies.json
+auth.json
+storage_state.json
+token.json
+tokens.json
+
+# ==========================================
+# Python & Virtual Environments
+# ==========================================
 venv/
 .venv/
-ENV/
 env/
-
-# Python cache
+ENV/
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
 
-# User browser data and persistent sessions (contains personal cookies/tokens)
-chatgpt_profile/
-test_profile/
-
-# Logs and temporary files
+# ==========================================
+# Temporary Files, Screenshots & Media Dumps
+# ==========================================
 *.log
 *.png
+*.jpg
+*.jpeg
+*.webp
+*.webm
+*.mp4
+*.tmp
+*.bak
+*.swp
+*.dump
+extracted_response.txt
+dom_inspection.json
+chatgpt_said_info.json
+live_snapshots.json
+streaming_log.json
+turn_ancestors.json
+markdown_test.txt
+chatgpt_page.png
+response_screen.png
+after_response.png
+
+# ==========================================
+# System & Editor Directories
+# ==========================================
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
 .system_generated/
