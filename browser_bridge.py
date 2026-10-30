@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import time
@@ -14,6 +15,8 @@ class BrowserBridge:
         self.playwright: Optional[Playwright] = None
         self.context: Optional[BrowserContext] = None
         self.page_chatgpt: Optional[Page] = None
+        self.cdp = None
+        self._current_network_queue: Optional[asyncio.Queue] = None
         self._lock = asyncio.Lock()
         self._is_busy = False
         self._initialized = False
@@ -104,6 +107,10 @@ class BrowserBridge:
 
             # Pre-initialize ChatGPT page
             self.page_chatgpt = self.context.pages[0] if self.context.pages else await self.context.new_page()
+
+            # Initialize CDP session for real-time network stream capture
+            await self._ensure_cdp_fetch()
+
             self.log("Preloading ChatGPT (chatgpt.com)...")
             await self.page_chatgpt.goto(config.CHATGPT_URL, wait_until="domcontentloaded", timeout=60000)
             await self._dismiss_chatgpt_dialogs()
@@ -116,6 +123,103 @@ class BrowserBridge:
             self.log(f"Browser startup error: {str(e)}", "ERROR")
             self._initialized = False
             raise
+
+    async def _ensure_cdp_fetch(self):
+        """Ensures CDP session and Fetch interception are active."""
+        try:
+            if not self.cdp:
+                self.cdp = await self.page_chatgpt.context.new_cdp_session(self.page_chatgpt)
+                self.cdp.on("Fetch.requestPaused", lambda evt: asyncio.create_task(self._on_fetch_paused(evt)))
+
+            await self.cdp.send("Fetch.enable", {
+                "patterns": [
+                    {"urlPattern": "*backend-api/f/conversation*", "requestStage": "Response"}
+                ]
+            })
+        except Exception as e:
+            try:
+                self.cdp = await self.page_chatgpt.context.new_cdp_session(self.page_chatgpt)
+                self.cdp.on("Fetch.requestPaused", lambda evt: asyncio.create_task(self._on_fetch_paused(evt)))
+                await self.cdp.send("Fetch.enable", {
+                    "patterns": [
+                        {"urlPattern": "*backend-api/f/conversation*", "requestStage": "Response"}
+                    ]
+                })
+            except Exception as err:
+                self.log(f"CDP Fetch enable notice: {err}", "WARNING")
+
+    async def _on_fetch_paused(self, evt: Dict[str, Any]):
+        req_id = evt.get('requestId')
+        url = evt.get('request', {}).get('url', '')
+        if not url.endswith("/backend-api/f/conversation"):
+            try:
+                await self.cdp.send("Fetch.continueResponse", {"requestId": req_id})
+            except Exception:
+                pass
+            return
+
+        try:
+            stream_info = await self.cdp.send("Fetch.takeResponseBodyAsStream", {"requestId": req_id})
+            handle = stream_info.get("stream")
+            asyncio.create_task(self._consume_cdp_stream(handle))
+        except Exception as err:
+            self.log(f"Error taking response body as stream: {err}", "ERROR")
+            if self._current_network_queue:
+                self._current_network_queue.put_nowait(None)
+
+    async def _consume_cdp_stream(self, handle: str):
+        """Streams and parses chunked SSE deltas directly from the CDP stream."""
+        buffer = ""
+        try:
+            while True:
+                chunk_res = await self.cdp.send("IO.read", {"handle": handle, "size": 32768})
+                data = chunk_res.get("data", "")
+                eof = chunk_res.get("eof", False)
+
+                if data:
+                    buffer += data
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        line = line.strip()
+                        if not line.startswith("data:"):
+                            continue
+                        raw_data = line[5:].strip()
+                        if raw_data == "[DONE]":
+                            eof = True
+                            break
+                        try:
+                            obj = json.loads(raw_data)
+                            if isinstance(obj, dict):
+                                if obj.get("type") == "message_stream_complete":
+                                    eof = True
+                                    break
+
+                                patches = []
+                                if "v" in obj and isinstance(obj["v"], list):
+                                    patches.extend(obj["v"])
+                                elif obj.get("o") == "patch" and "v" in obj and isinstance(obj["v"], list):
+                                    patches.extend(obj["v"])
+
+                                for p in patches:
+                                    if isinstance(p, dict) and p.get("p", "").startswith("/message/content/parts") and p.get("o") == "append":
+                                        v = p.get("v")
+                                        if isinstance(v, str) and v and self._current_network_queue:
+                                            self._current_network_queue.put_nowait(v)
+                        except Exception:
+                            pass
+
+                if eof:
+                    break
+                await asyncio.sleep(0.01)
+        except Exception as e:
+            self.log(f"Stream consumer error: {e}", "WARNING")
+        finally:
+            try:
+                await self.cdp.send("IO.close", {"handle": handle})
+            except Exception:
+                pass
+            if self._current_network_queue:
+                self._current_network_queue.put_nowait(None)
 
     # ------------------ Account State Detection ------------------
 
@@ -250,13 +354,16 @@ class BrowserBridge:
             "div[contenteditable='true']",
             "textarea"
         ]
-        for sel in selectors:
-            try:
-                el = await self.page_chatgpt.query_selector(sel)
-                if el and await el.is_visible():
-                    return el
-            except Exception:
-                pass
+        for _ in range(10):
+            for sel in selectors:
+                try:
+                    el = await self.page_chatgpt.query_selector(sel)
+                    if el and await el.is_visible():
+                        return el
+                except Exception:
+                    pass
+            await asyncio.sleep(0.3)
+
         try:
             return await self.page_chatgpt.wait_for_selector(", ".join(selectors), timeout=8000, state="visible")
         except Exception:
@@ -265,28 +372,34 @@ class BrowserBridge:
     async def _stream_chatgpt(self, prompt: str, new_chat: bool) -> AsyncGenerator[str, None]:
         if not self.page_chatgpt or self.page_chatgpt.is_closed():
             self.page_chatgpt = await self.context.new_page()
-            await self.page_chatgpt.goto(config.CHATGPT_URL, wait_until="networkidle")
+            await self.page_chatgpt.goto(config.CHATGPT_URL, wait_until="domcontentloaded")
 
         if new_chat:
-            self.log("ChatGPT: starting new conversation...")
+            self.log("ChatGPT: resetting conversation...")
             try:
                 new_btn = await self.page_chatgpt.query_selector("a[href='/'], button[aria-label*='New chat']")
                 if new_btn and await new_btn.is_visible():
                     await new_btn.click()
+                    await asyncio.sleep(0.4)
                 else:
                     await self.page_chatgpt.goto(config.CHATGPT_URL, wait_until="domcontentloaded")
-                await asyncio.sleep(0.8)
+                    await asyncio.sleep(0.5)
                 await self._dismiss_chatgpt_dialogs()
             except Exception:
                 pass
 
+        await self._ensure_cdp_fetch()
+
         composer = await self._get_chatgpt_composer()
         if not composer:
-            await self.page_chatgpt.goto(config.CHATGPT_URL, wait_until="networkidle")
+            await self.page_chatgpt.goto(config.CHATGPT_URL, wait_until="domcontentloaded")
             await self._dismiss_chatgpt_dialogs()
             composer = await self._get_chatgpt_composer()
             if not composer:
                 raise RuntimeError("Could not find ChatGPT input composer.")
+
+        # Initialize fresh network queue for this request
+        self._current_network_queue = asyncio.Queue()
 
         self.log(f"ChatGPT: sending prompt ({len(prompt)} chars)...")
         await composer.click()
@@ -299,116 +412,33 @@ class BrowserBridge:
         else:
             await self.page_chatgpt.keyboard.press("Enter")
 
-        self.log("ChatGPT: prompt submitted. Streaming response...")
-        previous_text = ""
+        self.log("ChatGPT: prompt submitted. Streaming purely from network...")
+        token_count = 0
         start_time = time.time()
         timeout = config.REQUEST_TIMEOUT
-        streaming_began = False
-        idle_cycles = 0
 
-        while time.time() - start_time < timeout:
-            await asyncio.sleep(config.STREAM_POLL_INTERVAL)
-            is_streaming = await self.page_chatgpt.evaluate('''() => {
-                const stopBtn = document.querySelector('button[aria-label*="Stop"], button[data-testid*="stop"]');
-                return !!stopBtn;
-            }''')
-
-            current_text = await self.page_chatgpt.evaluate(r'''() => {
-                // 1. Look for all screen reader elements that say 'ChatGPT said:'
-                const all = Array.from(document.querySelectorAll('*'));
-                const saidEls = all.filter(el => (el.innerText || '').includes('ChatGPT said:') && el.children.length === 0);
-                
-                if (saidEls.length > 0) {
-                    const lastSaid = saidEls[saidEls.length - 1];
-                    const h4 = lastSaid.closest('h4') || lastSaid;
-                    
-                    // Walk up parents from h4 to find the turn container without including the user's turn
-                    let cur = h4.parentElement;
-                    while (cur && cur !== document.body) {
-                        const txt = cur.innerText || '';
-                        // Do NOT climb into a wrapper that includes user turns
-                        if (txt.includes('You said:') || txt.includes('You\n')) {
-                            break;
-                        }
-
-                        // Check if .markdown exists inside this turn container
-                        const md = cur.querySelector('.markdown, [class*="markdown"]');
-                        if (md) {
-                            const clone = md.cloneNode(true);
-                            clone.querySelectorAll('.sr-only, button, [role="button"]').forEach(b => b.remove());
-                            let t = clone.innerText.trim();
-                            if (t) return t;
-                        }
-
-                        // Clone and remove h4, screen reader elements, and buttons
-                        const clone = cur.cloneNode(true);
-                        clone.querySelectorAll('h4, .sr-only, button, [role="button"], [class*="action"], [class*="feedback"]').forEach(b => b.remove());
-                        let res = clone.innerText.trim();
-
-                        if (res) {
-                            // Strip any leading author label (e.g. "ChatGPT\n" or "ChatGPT said:")
-                            res = res.replace(/^(ChatGPT said:\s*|ChatGPT\s*\n\s*)/i, '').trim();
-                            const footers = ['ChatGPT is AI and can make mistakes.', 'ChatGPT can make mistakes.', 'Latest response'];
-                            for (const f of footers) {
-                                if (res.includes(f)) res = res.split(f)[0].trim();
-                            }
-                            if (res) return res;
-                        }
-
-                        cur = cur.parentElement;
-                    }
-                }
-
-                // 2. Fallback to articles or assistant roles if present
-                const mdFallbacks = Array.from(document.querySelectorAll('[data-message-author-role="assistant"] .markdown, article .markdown'));
-                if (mdFallbacks.length > 0) {
-                    const lastMd = mdFallbacks[mdFallbacks.length - 1];
-                    const clone = lastMd.cloneNode(true);
-                    clone.querySelectorAll('.sr-only, button, [role="button"]').forEach(b => b.remove());
-                    return clone.innerText.trim();
-                }
-
-                const assistantTurns = Array.from(document.querySelectorAll('[data-message-author-role="assistant"]'));
-                if (assistantTurns.length > 0) {
-                    const lastTurn = assistantTurns[assistantTurns.length - 1];
-                    const clone = lastTurn.cloneNode(true);
-                    clone.querySelectorAll('h4, .sr-only, button, [role="button"]').forEach(b => b.remove());
-                    let res = clone.innerText.trim();
-                    res = res.replace(/^(ChatGPT said:\s*|ChatGPT\s*\n\s*)/i, '').trim();
-                    return res;
-                }
-
-                return "";
-            }''') or ""
-
-            if is_streaming or len(current_text) > 0:
-                streaming_began = True
-
-            if current_text and current_text != previous_text:
-                if current_text.startswith(previous_text):
-                    delta = current_text[len(previous_text):]
-                else:
-                    common_len = 0
-                    min_len = min(len(previous_text), len(current_text))
-                    while common_len < min_len and previous_text[common_len] == current_text[common_len]:
-                        common_len += 1
-                    delta = current_text[common_len:]
-
-                if delta:
-                    previous_text = current_text
-                    idle_cycles = 0
-                    yield delta
-            else:
-                idle_cycles += 1
-
-            if streaming_began and not is_streaming and idle_cycles >= 3:
-                await asyncio.sleep(0.3)
-                self.log(f"ChatGPT stream complete! ({len(previous_text)} chars)")
+        while True:
+            try:
+                token = await asyncio.wait_for(self._current_network_queue.get(), timeout=timeout)
+                if token is None:  # Sentinel signals end of SSE stream
+                    break
+                token_count += len(token)
+                yield token
+            except asyncio.TimeoutError:
+                self.log("ChatGPT network stream timed out.", "WARNING")
                 break
 
-            if not streaming_began and idle_cycles > 40:
-                self.log("ChatGPT: No activity detected after prompt.", "WARNING")
-                break
+        elapsed = time.time() - start_time
+        self.log(f"ChatGPT network stream complete! ({token_count} chars in {elapsed:.2f}s)")
+
+        # Reset web UI state machine so the composer is immediately ready for next prompt
+        try:
+            stop_btn = await self.page_chatgpt.query_selector("button[aria-label*='Stop'], button[data-testid*='stop']")
+            if stop_btn and await stop_btn.is_visible():
+                await stop_btn.click()
+                await asyncio.sleep(0.2)
+        except Exception:
+            pass
 
     # ------------------ Execution & Dispatcher ------------------
 
