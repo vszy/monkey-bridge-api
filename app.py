@@ -40,7 +40,7 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS enabled for all origins (useful for web clients, Open WebUI, LibreChat, NextChat)
+# CORS enabled for all origins
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -48,6 +48,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def normalize_and_log_requests(request: Request, call_next):
+    import re
+    # Normalize duplicate slashes in path (e.g. /v1//chat/completions -> /v1/chat/completions)
+    original_path = request.url.path
+    clean_path = re.sub(r"/+", "/", original_path)
+    if clean_path != original_path:
+        request.scope["path"] = clean_path
+    
+    bridge.log(f"HTTP: {request.method} {clean_path}")
+    response = await call_next(request)
+    bridge.log(f"HTTP: {request.method} {clean_path} -> {response.status_code}")
+    return response
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -57,6 +71,11 @@ async def root():
     """Serves the main dashboard and interactive chat playground."""
     from fastapi.responses import FileResponse
     return FileResponse("static/index.html")
+
+@app.get("/v1")
+@app.get("/v1/")
+async def v1_ping():
+    return {"status": "ok", "message": "ChatGPT OpenAI Bridge API is running."}
 
 @app.get("/health")
 @app.get("/api/status")
@@ -86,13 +105,27 @@ async def api_restart_browser():
     return {"status": "success", "message": "Browser restarted."}
 
 @app.get("/v1/models")
+@app.get("/models")
 async def list_models():
     """OpenAI-compatible models listing endpoint."""
     return ModelListResponse(
         data=[ModelItem(**m) for m in config.AVAILABLE_MODELS]
     )
 
+@app.get("/v1/models/{model_id:path}")
+@app.get("/models/{model_id:path}")
+async def get_model(model_id: str):
+    return {
+        "id": model_id,
+        "object": "model",
+        "created": 1715367049,
+        "owned_by": "openai"
+    }
+
 @app.post("/v1/chat/completions")
+@app.post("/chat/completions")
+@app.post("/v1/responses")
+@app.post("/responses")
 async def chat_completions(req: ChatCompletionRequest):
     """
     OpenAI-compatible Chat Completions endpoint.

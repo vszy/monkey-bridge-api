@@ -222,19 +222,38 @@ class ChatGPTBrowserBridge:
         """Formats an array of OpenAI messages into a single prompt for ChatGPT."""
         if not messages:
             return ""
+
+        def extract_text(content: Any) -> str:
+            if content is None:
+                return ""
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                parts = []
+                for item in content:
+                    if isinstance(item, dict):
+                        parts.append(item.get("text", item.get("content", str(item))))
+                    else:
+                        parts.append(str(item))
+                return "\n".join(parts)
+            if isinstance(content, dict):
+                return content.get("text", str(content))
+            return str(content)
+
         if len(messages) == 1:
-            content = messages[0].content
-            return content if isinstance(content, str) else str(content)
+            return extract_text(messages[0].content)
 
         formatted_parts = []
         for msg in messages:
-            role = msg.role.capitalize()
-            content = msg.content if isinstance(msg.content, str) else str(msg.content)
-            if msg.role.lower() == "system":
+            role = getattr(msg, "role", "user").capitalize()
+            content = extract_text(getattr(msg, "content", ""))
+            if not content.strip():
+                continue
+            if role.lower() == "system":
                 formatted_parts.append(f"[System Instruction]: {content}\n")
-            elif msg.role.lower() == "user":
+            elif role.lower() == "user":
                 formatted_parts.append(f"[User]: {content}")
-            elif msg.role.lower() == "assistant":
+            elif role.lower() == "assistant":
                 formatted_parts.append(f"[Assistant]: {content}")
             else:
                 formatted_parts.append(f"[{role}]: {content}")

@@ -4,10 +4,12 @@ import time
 import uuid
 
 class ChatMessage(BaseModel):
+    model_config = {"extra": "allow"}
     role: str
-    content: Union[str, List[Any]]
+    content: Optional[Union[str, List[Any], Dict[str, Any]]] = ""
 
 class ChatCompletionRequest(BaseModel):
+    model_config = {"extra": "allow"}
     model: str = "gpt-4o"
     messages: List[ChatMessage]
     stream: Optional[bool] = False
