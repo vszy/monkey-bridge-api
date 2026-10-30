@@ -387,44 +387,71 @@ class BrowserBridge:
             }''')
 
             current_text = await self.page_chatgpt.evaluate(r'''() => {
-                // Find all assistant turns
-                const assistantTurns = Array.from(document.querySelectorAll('[data-message-author-role="assistant"]'));
-                let targetTurn = assistantTurns.length > 0 ? assistantTurns[assistantTurns.length - 1] : null;
-
-                if (!targetTurn) {
-                    const articles = Array.from(document.querySelectorAll('article')).filter(a => {
-                        return !a.querySelector('[data-message-author-role="user"]') && !!a.querySelector('.markdown, [class*="markdown"]');
-                    });
-                    if (articles.length > 0) targetTurn = articles[articles.length - 1];
-                }
-
-                if (!targetTurn) return "";
-
-                // Find the markdown body inside the assistant turn
-                const md = targetTurn.querySelector('.markdown, [class*="markdown"], .whitespace-pre-wrap');
-                if (!md) return "";
-
-                // Clone so we don't mutate DOM and remove utility elements
-                const clone = md.cloneNode(true);
-                clone.querySelectorAll('.sr-only, button, [class*="action"], [class*="feedback"]').forEach(el => el.remove());
-
-                let text = clone.innerText || "";
-                text = text.trim();
+                // 1. Look for all screen reader elements that say 'ChatGPT said:'
+                const all = Array.from(document.querySelectorAll('*'));
+                const saidEls = all.filter(el => (el.innerText || '').includes('ChatGPT said:') && el.children.length === 0);
                 
-                // Strip any accidental leading "ChatGPT said:" or "ChatGPT"
-                if (text.toLowerCase().startsWith('chatgpt said:')) {
-                    text = text.slice(13).trim();
-                } else if (text.toLowerCase().startsWith('chatgpt')) {
-                    text = text.slice(7).trim();
+                if (saidEls.length > 0) {
+                    const lastSaid = saidEls[saidEls.length - 1];
+                    const h4 = lastSaid.closest('h4') || lastSaid;
+                    
+                    // Walk up parents from h4 to find the turn container without including the user's turn
+                    let cur = h4.parentElement;
+                    while (cur && cur !== document.body) {
+                        const txt = cur.innerText || '';
+                        // Do NOT climb into a wrapper that includes user turns
+                        if (txt.includes('You said:') || txt.includes('You\n')) {
+                            break;
+                        }
+
+                        // Check if .markdown exists inside this turn container
+                        const md = cur.querySelector('.markdown, [class*="markdown"]');
+                        if (md) {
+                            const clone = md.cloneNode(true);
+                            clone.querySelectorAll('.sr-only, button, [role="button"]').forEach(b => b.remove());
+                            let t = clone.innerText.trim();
+                            if (t) return t;
+                        }
+
+                        // Clone and remove h4, screen reader elements, and buttons
+                        const clone = cur.cloneNode(true);
+                        clone.querySelectorAll('h4, .sr-only, button, [role="button"], [class*="action"], [class*="feedback"]').forEach(b => b.remove());
+                        let res = clone.innerText.trim();
+
+                        if (res) {
+                            // Strip any leading author label (e.g. "ChatGPT\n" or "ChatGPT said:")
+                            res = res.replace(/^(ChatGPT said:\s*|ChatGPT\s*\n\s*)/i, '').trim();
+                            const footers = ['ChatGPT is AI and can make mistakes.', 'ChatGPT can make mistakes.', 'Latest response'];
+                            for (const f of footers) {
+                                if (res.includes(f)) res = res.split(f)[0].trim();
+                            }
+                            if (res) return res;
+                        }
+
+                        cur = cur.parentElement;
+                    }
                 }
 
-                // Remove footer boilerplate if captured
-                const footers = ['ChatGPT is AI and can make mistakes.', 'ChatGPT can make mistakes.'];
-                for (const f of footers) {
-                    if (text.includes(f)) text = text.split(f)[0].trim();
+                // 2. Fallback to articles or assistant roles if present
+                const mdFallbacks = Array.from(document.querySelectorAll('[data-message-author-role="assistant"] .markdown, article .markdown'));
+                if (mdFallbacks.length > 0) {
+                    const lastMd = mdFallbacks[mdFallbacks.length - 1];
+                    const clone = lastMd.cloneNode(true);
+                    clone.querySelectorAll('.sr-only, button, [role="button"]').forEach(b => b.remove());
+                    return clone.innerText.trim();
                 }
 
-                return text;
+                const assistantTurns = Array.from(document.querySelectorAll('[data-message-author-role="assistant"]'));
+                if (assistantTurns.length > 0) {
+                    const lastTurn = assistantTurns[assistantTurns.length - 1];
+                    const clone = lastTurn.cloneNode(true);
+                    clone.querySelectorAll('h4, .sr-only, button, [role="button"]').forEach(b => b.remove());
+                    let res = clone.innerText.trim();
+                    res = res.replace(/^(ChatGPT said:\s*|ChatGPT\s*\n\s*)/i, '').trim();
+                    return res;
+                }
+
+                return "";
             }''') or ""
 
             if is_streaming or len(current_text) > 0:
@@ -434,7 +461,6 @@ class BrowserBridge:
                 if current_text.startswith(previous_text):
                     delta = current_text[len(previous_text):]
                 else:
-                    # Prefix changed or initial sync: find common prefix length
                     common_len = 0
                     min_len = min(len(previous_text), len(current_text))
                     while common_len < min_len and previous_text[common_len] == current_text[common_len]:
