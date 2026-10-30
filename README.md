@@ -14,12 +14,18 @@ An OpenAI-compatible REST API server that bridges incoming `/v1/chat/completions
   - Connects to Google Chrome or bundled Chromium with real anti-detection flags (`--disable-blink-features=AutomationControlled`).
   - Persistent profile storage (`./chatgpt_profile`): Log in once to your ChatGPT account (free or Plus) and your session persists across restarts.
   - Guest mode support: Works out-of-the-box even without logging in.
+- **Pure Network-Level SSE Stream Interception**:
+  - Intercepts ChatGPT's internal Server-Sent Events (`/backend-api/f/conversation`) directly via Chrome DevTools Protocol (CDP `Fetch.takeResponseBodyAsStream`).
+  - Completely eliminates fragile DOM scraping, polling delays, and text stripping.
+- **Automatic Images & Citation Sources Extraction**:
+  - Automatically identifies web search images, citations, and reference links in the SSE metadata.
+  - Formats images into a responsive `<div class="image-gallery">` card layout and appends clickable deduplicated source links (`### 🔗 Sources & References`).
 - **Real-Time Streaming**:
-  - SSE (`stream: true`) token streaming with live delta calculation.
+  - High-performance SSE (`stream: true`) token streaming with live delta calculation.
 - **Concurrent Request Guard**:
   - Async queue lock serializes requests safely so browser tabs never collide.
 - **Interactive Web Dashboard & Playground**:
-  - Live test UI at `http://localhost:8000/` with markdown rendering, latency counter, system prompt, and real-time server activity terminal.
+  - Live test UI at `http://localhost:8000/` with markdown rendering, image card gallery, latency counter, system prompt, and real-time server activity terminal.
 - **Drop-in Compatibility**:
   - Works with Cursor, LibreChat, Open WebUI, NextChat, LangChain, or the official OpenAI Python/Node SDKs.
 
