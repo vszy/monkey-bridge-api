@@ -1,7 +1,7 @@
 @echo off
-title ChatGPT OpenAI API Bridge Server
+title Monkey Bridge - OpenAI API Bridge Server
 echo =======================================================
-echo    ChatGPT Web to OpenAI API Bridge Server
+echo    🐵 MONKEY BRIDGE - ChatGPT Web to OpenAI API Bridge
 echo =======================================================
 echo.
 

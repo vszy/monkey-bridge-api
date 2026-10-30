@@ -34,7 +34,7 @@ async def lifespan(app: FastAPI):
     await bridge.close()
 
 app = FastAPI(
-    title="ChatGPT Web OpenAI API Bridge",
+    title="Monkey Bridge OpenAI API",
     description="OpenAI-compatible REST API powered by ChatGPT Web automation",
     version="1.0.0",
     lifespan=lifespan
@@ -75,7 +75,7 @@ async def root():
 @app.get("/v1")
 @app.get("/v1/")
 async def v1_ping():
-    return {"status": "ok", "message": "ChatGPT OpenAI Bridge API is running."}
+    return {"status": "ok", "message": "Monkey Bridge OpenAI API is running."}
 
 @app.get("/health")
 @app.get("/api/status")
@@ -239,7 +239,7 @@ async def chat_completions(req: ChatCompletionRequest):
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"ChatGPT Bridge Error: {str(e)}"
+            detail=f"Monkey Bridge Error: {str(e)}"
         )
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ from playwright.async_api import async_playwright, BrowserContext, Page, Playwri
 import config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger("ChatGPTBridge")
+logger = logging.getLogger("MonkeyBridge")
 
 def format_url_title(url: str) -> str:
     try:

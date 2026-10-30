@@ -1,6 +1,6 @@
 @echo off
 echo ========================================================
-echo Stopping ChatGPT API Bridge Server (Port 8000)
+echo Stopping Monkey Bridge Server (Port 8000)
 echo ========================================================
 echo.
 set FOUND=0
