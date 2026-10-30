@@ -386,7 +386,7 @@ class BrowserBridge:
                 return !!stopBtn;
             }''')
 
-            current_text = await self.page_chatgpt.evaluate('''() => {
+            current_text = await self.page_chatgpt.evaluate(r'''() => {
                 // Find all assistant turns
                 const assistantTurns = Array.from(document.querySelectorAll('[data-message-author-role="assistant"]'));
                 let targetTurn = assistantTurns.length > 0 ? assistantTurns[assistantTurns.length - 1] : null;
@@ -409,9 +409,14 @@ class BrowserBridge:
                 clone.querySelectorAll('.sr-only, button, [class*="action"], [class*="feedback"]').forEach(el => el.remove());
 
                 let text = clone.innerText || "";
+                text = text.trim();
                 
-                // Strip any accidental leading "ChatGPT said:" or "ChatGPT\n"
-                text = text.replace(/^(ChatGPT\s*said:\s*|ChatGPT\s*\n\s*)/i, '').trim();
+                // Strip any accidental leading "ChatGPT said:" or "ChatGPT"
+                if (text.toLowerCase().startsWith('chatgpt said:')) {
+                    text = text.slice(13).trim();
+                } else if (text.toLowerCase().startsWith('chatgpt')) {
+                    text = text.slice(7).trim();
+                }
 
                 // Remove footer boilerplate if captured
                 const footers = ['ChatGPT is AI and can make mistakes.', 'ChatGPT can make mistakes.'];
