@@ -9,22 +9,33 @@ import config
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("ChatGPTBridge")
 
-class ChatGPTBrowserBridge:
+class BrowserBridge:
     def __init__(self):
         self.playwright: Optional[Playwright] = None
         self.context: Optional[BrowserContext] = None
-        self.page: Optional[Page] = None
+        self.page_chatgpt: Optional[Page] = None
+        self.page_gemini: Optional[Page] = None
         self._lock = asyncio.Lock()
         self._is_busy = False
         self._initialized = False
         self._recent_logs: List[str] = []
-        self._account_info: Dict[str, Any] = {
-            "is_logged_in": False,
-            "type": "Guest",
-            "label": "Guest Mode (Not Logged In)",
-            "name": None,
-            "email": None,
-            "plan": "Guest (Free)"
+        self._accounts: Dict[str, Any] = {
+            "chatgpt": {
+                "is_logged_in": False,
+                "type": "Guest",
+                "label": "Guest Mode (Not Logged In)",
+                "name": "Anonymous (Guest)",
+                "email": "None",
+                "plan": "Free Web Tier (Guest)"
+            },
+            "gemini": {
+                "is_logged_in": False,
+                "type": "Guest",
+                "label": "Guest Mode (Not Logged In)",
+                "name": "Anonymous (Google Guest)",
+                "email": "None",
+                "plan": "Free Web Tier"
+            }
         }
 
     def log(self, message: str, level: str = "INFO"):
@@ -40,87 +51,40 @@ class ChatGPTBrowserBridge:
 
     @property
     def is_ready(self) -> bool:
-        return self._initialized and self.page is not None
+        return self._initialized and self.context is not None
 
     def get_status(self) -> Dict[str, Any]:
         return {
             "initialized": self._initialized,
             "busy": self._is_busy,
-            "url": self.page.url if self.page else None,
-            "account": self._account_info,
+            "accounts": self._accounts,
+            "urls": {
+                "chatgpt": self.page_chatgpt.url if self.page_chatgpt else None,
+                "gemini": self.page_gemini.url if self.page_gemini else None
+            },
             "logs": self._recent_logs[-30:]
         }
 
-    async def update_account_info(self) -> Dict[str, Any]:
-        """Detects whether user is in Guest mode or logged into an account."""
-        if not self.page or self.page.is_closed():
-            return self._account_info
-        try:
-            info = await self.page.evaluate('''() => {
-                const allButtons = Array.from(document.querySelectorAll('button, a'));
-                
-                // Check if page has visible Login / Sign Up buttons
-                const hasLoginButton = allButtons.some(el => {
-                    const txt = el.innerText?.trim();
-                    return txt === 'Log in' || txt === 'Sign up for free' || txt === 'Sign up' || txt === 'Log in or create account';
-                });
-
-                // User menu element in sidebar or header
-                const userMenuButton = document.querySelector('button[data-testid="user-menu-button"], button[data-testid="profile-button"], [data-testid="profile-button"]');
-                const avatarImg = document.querySelector('img[alt*="avatar" i], img[alt*="profile" i]');
-
-                // If login buttons are present and no dedicated user menu button, user is in Guest mode
-                const isActuallyLoggedIn = !hasLoginButton && (!!userMenuButton || !!avatarImg);
-                
-                let userName = null;
-                let userEmail = null;
-                let plan = isActuallyLoggedIn ? "OpenAI Account" : "Free Web Tier (Guest)";
-
-                if (userMenuButton) {
-                    const txt = userMenuButton.innerText?.trim();
-                    if (txt && !txt.includes('Remove') && !txt.includes('Log in')) {
-                        userName = txt;
-                    }
-                }
-
-                if (!userName && avatarImg && avatarImg.alt) {
-                    userName = avatarImg.alt;
-                }
-
-                if (!isActuallyLoggedIn) {
-                    return {
-                        is_logged_in: false,
-                        type: "Guest",
-                        label: "Guest Mode (Not Logged In)",
-                        name: "Anonymous (Guest)",
-                        email: "None",
-                        plan: "Free Web Tier (Guest)"
-                    };
-                }
-
-                return {
-                    is_logged_in: true,
-                    type: "Logged In",
-                    label: `Logged In (${userName || 'Account'})`,
-                    name: userName || "Authenticated User",
-                    email: userEmail || "Stored in Profile",
-                    plan: plan
-                };
-            }''')
-            self._account_info = info
-            return info
-        except Exception as e:
-            return self._account_info
+    def resolve_provider(self, model: str = "", explicit_provider: Optional[str] = None) -> str:
+        if explicit_provider:
+            p = explicit_provider.lower().strip()
+            if "gemini" in p or "google" in p:
+                return "gemini"
+            return "chatgpt"
+        m = (model or "").lower().strip()
+        if "gemini" in m or m.startswith("google"):
+            return "gemini"
+        return "chatgpt"
 
     async def initialize(self):
-        """Initializes the browser and navigates to ChatGPT."""
+        """Initializes browser and launches persistent context."""
         async with self._lock:
-            if self._initialized and self.page and not self.page.is_closed():
+            if self._initialized and self.context:
                 return
             await self._start_browser()
 
     async def _start_browser(self):
-        self.log("Launching browser engine...")
+        self.log("Launching unified browser engine (Chrome)...")
         self.playwright = await async_playwright().start()
 
         profile_dir = os.path.abspath(config.PROFILE_DIR)
@@ -135,21 +99,19 @@ class ChatGPTBrowserBridge:
             "--start-maximized"
         ]
 
-        # Check if Chrome executable exists
         executable = config.CHROME_PATH if os.path.exists(config.CHROME_PATH) else None
         if executable:
             self.log(f"Using Google Chrome from: {executable}")
         else:
-            self.log("Custom Chrome not found. Falling back to bundled Chromium.")
+            self.log("Custom Chrome not found. Using bundled Chromium.")
 
         try:
             if config.CDP_URL:
                 self.log(f"Connecting to existing browser via CDP: {config.CDP_URL}")
                 browser = await self.playwright.chromium.connect_over_cdp(config.CDP_URL)
                 self.context = browser.contexts[0] if browser.contexts else await browser.new_context()
-                self.page = self.context.pages[0] if self.context.pages else await self.context.new_page()
             else:
-                self.log(f"Using persistent user profile at: {profile_dir} (Headless: {config.HEADLESS})")
+                self.log(f"Loading persistent profile from: {profile_dir}")
                 self.context = await self.playwright.chromium.launch_persistent_context(
                     user_data_dir=profile_dir,
                     executable_path=executable,
@@ -157,69 +119,139 @@ class ChatGPTBrowserBridge:
                     viewport={"width": 1440, "height": 900},
                     args=launch_args
                 )
-                self.page = self.context.pages[0] if self.context.pages else await self.context.new_page()
 
-            self.log("Navigating to ChatGPT...")
-            await self.page.goto(config.CHATGPT_URL, wait_until="networkidle", timeout=60000)
-            await self._dismiss_dialogs()
+            # Pre-initialize ChatGPT page
+            self.page_chatgpt = self.context.pages[0] if self.context.pages else await self.context.new_page()
+            self.log("Preloading ChatGPT (chatgpt.com)...")
+            await self.page_chatgpt.goto(config.CHATGPT_URL, wait_until="domcontentloaded", timeout=60000)
+            await self._dismiss_chatgpt_dialogs()
+
+            # Pre-initialize Gemini page
+            self.page_gemini = await self.context.new_page()
+            self.log("Preloading Gemini (gemini.google.com)...")
+            await self.page_gemini.goto(config.GEMINI_URL, wait_until="domcontentloaded", timeout=60000)
+
             self._initialized = True
-            await self.update_account_info()
-            self.log(f"ChatGPT Web ready! Account: {self._account_info.get('label')}")
+            await self.update_all_accounts()
+            self.log("Both ChatGPT and Google Gemini interfaces ready!")
+
         except Exception as e:
-            self.log(f"Error during browser initialization: {str(e)}", "ERROR")
+            self.log(f"Browser startup error: {str(e)}", "ERROR")
             self._initialized = False
             raise
 
-    async def _dismiss_dialogs(self):
-        """Dismiss common modals like 'Stay logged out' or cookie notices."""
-        if not self.page:
-            return
-        selectors = [
-            "button:has-text('Stay logged out')",
-            "button:has-text('Dismiss')",
-            "button:has-text('Continue without logging in')",
-            "button[aria-label='Dismiss']",
-            "button[aria-label='Close']"
-        ]
-        for sel in selectors:
-            try:
-                btn = await self.page.query_selector(sel)
-                if btn and await btn.is_visible():
-                    await btn.click()
-                    self.log(f"Dismissed prompt dialog: {sel}")
-                    await asyncio.sleep(0.5)
-            except Exception:
-                pass
+    # ------------------ Account State Detection ------------------
 
-    async def _get_composer(self):
-        """Locates the composer input element."""
-        selectors = [
-            "#prompt-textarea",
-            "#mobile-composer-prompt",
-            "textarea[placeholder*='ChatGPT']",
-            "textarea[placeholder*='Ask']",
-            "div[contenteditable='true']",
-            "textarea"
-        ]
-        for sel in selectors:
-            try:
-                el = await self.page.query_selector(sel)
-                if el and await el.is_visible():
-                    return el
-            except Exception:
-                pass
-        # Wait up to 8 seconds for any composer
+    async def update_all_accounts(self) -> Dict[str, Any]:
+        """Scans account states for both ChatGPT and Google Gemini."""
+        await asyncio.gather(
+            self.update_chatgpt_account(),
+            self.update_gemini_account(),
+            return_exceptions=True
+        )
+        return self._accounts
+
+    async def update_chatgpt_account(self) -> Dict[str, Any]:
+        if not self.page_chatgpt or self.page_chatgpt.is_closed():
+            return self._accounts["chatgpt"]
         try:
-            return await self.page.wait_for_selector(
-                ", ".join(selectors),
-                timeout=8000,
-                state="visible"
-            )
+            info = await self.page_chatgpt.evaluate('''() => {
+                const allButtons = Array.from(document.querySelectorAll('button, a'));
+                const hasLoginButton = allButtons.some(el => {
+                    const txt = el.innerText?.trim();
+                    return txt === 'Log in' || txt === 'Sign up for free' || txt === 'Sign up';
+                });
+
+                const userMenuButton = document.querySelector('button[data-testid="user-menu-button"], button[data-testid="profile-button"], [data-testid="profile-button"]');
+                const avatarImg = document.querySelector('img[alt*="avatar" i], img[alt*="profile" i]');
+
+                const isActuallyLoggedIn = !hasLoginButton && (!!userMenuButton || !!avatarImg);
+                let userName = null;
+
+                if (userMenuButton) {
+                    const txt = userMenuButton.innerText?.trim();
+                    if (txt && !txt.includes('Remove') && !txt.includes('Log in')) {
+                        userName = txt;
+                    }
+                }
+                if (!userName && avatarImg && avatarImg.alt) {
+                    userName = avatarImg.alt;
+                }
+
+                if (!isActuallyLoggedIn) {
+                    return {
+                        is_logged_in: false,
+                        type: "Guest",
+                        label: "Guest Mode (Not Logged In)",
+                        name: "Anonymous (Guest)",
+                        email: "None",
+                        plan: "Free Web Tier"
+                    };
+                }
+                return {
+                    is_logged_in: true,
+                    type: "Logged In",
+                    label: `Logged In (${userName || 'Account'})`,
+                    name: userName || "Authenticated User",
+                    email: "Stored in Profile",
+                    plan: (userName && userName.includes('Plus')) ? "ChatGPT Plus" : "Standard / Plus"
+                };
+            }''')
+            self._accounts["chatgpt"] = info
+            return info
         except Exception:
-            return None
+            return self._accounts["chatgpt"]
+
+    async def update_gemini_account(self) -> Dict[str, Any]:
+        if not self.page_gemini or self.page_gemini.is_closed():
+            return self._accounts["gemini"]
+        try:
+            info = await self.page_gemini.evaluate('''() => {
+                // Check for Google Sign-in button
+                const signInBtns = Array.from(document.querySelectorAll('a, button')).filter(el => {
+                    const txt = el.innerText?.trim();
+                    return txt === 'Sign in' || txt === 'Sign In';
+                });
+
+                // Google account avatar / profile in top right
+                const profileBtn = document.querySelector('a[aria-label*="Google Account" i], button[aria-label*="Google Account" i], [aria-label*="Google Account" i]');
+                const isLogged = !signInBtns.length || !!profileBtn;
+
+                let name = null;
+                let email = null;
+                if (profileBtn) {
+                    const aria = profileBtn.getAttribute('aria-label') || '';
+                    name = aria.replace('Google Account:', '').trim();
+                }
+
+                if (!isLogged) {
+                    return {
+                        is_logged_in: false,
+                        type: "Guest",
+                        label: "Guest Mode (Not Logged In)",
+                        name: "Anonymous (Google Guest)",
+                        email: "None",
+                        plan: "Free Web Tier"
+                    };
+                }
+                return {
+                    is_logged_in: true,
+                    type: "Logged In",
+                    label: `Google Account (${name || 'Logged In'})`,
+                    name: name || "Google Account",
+                    email: email || "Active Session",
+                    plan: "Gemini Standard / Advanced"
+                };
+            }''')
+            self._accounts["gemini"] = info
+            return info
+        except Exception:
+            return self._accounts["gemini"]
+
+    # ------------------ Message Formatting ------------------
 
     def format_messages(self, messages: List[Any]) -> str:
-        """Formats an array of OpenAI messages into a single prompt for ChatGPT."""
+        """Formats an array of OpenAI messages into a single prompt string."""
         if not messages:
             return ""
 
@@ -258,184 +290,317 @@ class ChatGPTBrowserBridge:
             else:
                 formatted_parts.append(f"[{role}]: {content}")
 
-        # Instruction for model to continue the conversation
         formatted_parts.append("\n[Assistant]:")
         return "\n\n".join(formatted_parts)
 
-    async def _extract_current_response(self) -> str:
-        """Extracts the assistant response text from ChatGPT Web DOM."""
-        if not self.page:
-            return ""
+    # ------------------ ChatGPT Automation ------------------
+
+    async def _dismiss_chatgpt_dialogs(self):
+        if not self.page_chatgpt:
+            return
+        selectors = [
+            "button:has-text('Stay logged out')",
+            "button:has-text('Dismiss')",
+            "button:has-text('Continue without logging in')",
+            "button[aria-label='Dismiss']",
+            "button[aria-label='Close']"
+        ]
+        for sel in selectors:
+            try:
+                btn = await self.page_chatgpt.query_selector(sel)
+                if btn and await btn.is_visible():
+                    await btn.click()
+                    await asyncio.sleep(0.3)
+            except Exception:
+                pass
+
+    async def _get_chatgpt_composer(self):
+        selectors = [
+            "#prompt-textarea",
+            "#mobile-composer-prompt",
+            "textarea[placeholder*='ChatGPT']",
+            "textarea[placeholder*='Ask']",
+            "div[contenteditable='true']",
+            "textarea"
+        ]
+        for sel in selectors:
+            try:
+                el = await self.page_chatgpt.query_selector(sel)
+                if el and await el.is_visible():
+                    return el
+            except Exception:
+                pass
         try:
-            text = await self.page.evaluate('''() => {
-                // Find element containing "ChatGPT said:"
+            return await self.page_chatgpt.wait_for_selector(", ".join(selectors), timeout=8000, state="visible")
+        except Exception:
+            return None
+
+    async def _stream_chatgpt(self, prompt: str, new_chat: bool) -> AsyncGenerator[str, None]:
+        if not self.page_chatgpt or self.page_chatgpt.is_closed():
+            self.page_chatgpt = await self.context.new_page()
+            await self.page_chatgpt.goto(config.CHATGPT_URL, wait_until="networkidle")
+
+        if new_chat:
+            self.log("ChatGPT: starting new conversation...")
+            try:
+                new_btn = await self.page_chatgpt.query_selector("a[href='/'], button[aria-label*='New chat']")
+                if new_btn and await new_btn.is_visible():
+                    await new_btn.click()
+                else:
+                    await self.page_chatgpt.goto(config.CHATGPT_URL, wait_until="domcontentloaded")
+                await asyncio.sleep(0.8)
+                await self._dismiss_chatgpt_dialogs()
+            except Exception:
+                pass
+
+        composer = await self._get_chatgpt_composer()
+        if not composer:
+            await self.page_chatgpt.goto(config.CHATGPT_URL, wait_until="networkidle")
+            await self._dismiss_chatgpt_dialogs()
+            composer = await self._get_chatgpt_composer()
+            if not composer:
+                raise RuntimeError("Could not find ChatGPT input composer.")
+
+        self.log(f"ChatGPT: sending prompt ({len(prompt)} chars)...")
+        await composer.click()
+        await composer.fill(prompt)
+        await asyncio.sleep(0.3)
+
+        send_btn = await self.page_chatgpt.query_selector("button[aria-label*='Send'], button[data-testid='send-button']")
+        if send_btn and await send_btn.is_visible():
+            await send_btn.click()
+        else:
+            await self.page_chatgpt.keyboard.press("Enter")
+
+        self.log("ChatGPT: prompt submitted. Streaming response...")
+        previous_text = ""
+        start_time = time.time()
+        timeout = config.REQUEST_TIMEOUT
+        streaming_began = False
+        idle_cycles = 0
+
+        while time.time() - start_time < timeout:
+            await asyncio.sleep(config.STREAM_POLL_INTERVAL)
+            is_streaming = await self.page_chatgpt.evaluate('''() => {
+                const stopBtn = document.querySelector('button[aria-label*="Stop"], button[data-testid*="stop"]');
+                return !!stopBtn;
+            }''')
+
+            current_text = await self.page_chatgpt.evaluate('''() => {
                 const allElements = Array.from(document.querySelectorAll('*'));
                 const saidNodes = allElements.filter(el => {
                     const text = el.innerText || '';
                     return text.includes('ChatGPT said:') && el.children.length === 0;
                 });
-                
                 let response = "";
                 if (saidNodes.length > 0) {
                     const lastSaid = saidNodes[saidNodes.length - 1];
-                    const container = lastSaid.closest('article') || 
-                                      lastSaid.parentElement?.parentElement || 
-                                      lastSaid.parentElement;
+                    const container = lastSaid.closest('article') || lastSaid.parentElement?.parentElement || lastSaid.parentElement;
                     if (container) {
                         const raw = container.innerText || '';
                         const idx = raw.lastIndexOf('ChatGPT said:');
-                        if (idx !== -1) {
-                            response = raw.substring(idx + 'ChatGPT said:'.length);
-                        }
+                        if (idx !== -1) response = raw.substring(idx + 'ChatGPT said:'.length);
                     }
                 }
-                
-                // Fallback: look for articles or prose/markdown containers
                 if (!response.trim()) {
                     const articles = Array.from(document.querySelectorAll('article, [data-message-author-role="assistant"], div.markdown'));
-                    if (articles.length > 0) {
-                        response = articles[articles.length - 1].innerText || '';
-                    }
+                    if (articles.length > 0) response = articles[articles.length - 1].innerText || '';
                 }
-                
-                // Clean footers
-                const footers = [
-                    'ChatGPT is AI and can make mistakes.',
-                    'Thinking',
-                    'Log in to get answers based on saved chats',
-                    'Try advanced features for free'
-                ];
+                const footers = ['ChatGPT is AI and can make mistakes.', 'Thinking'];
                 for (const f of footers) {
-                    if (response.includes(f)) {
-                        response = response.split(f)[0];
-                    }
+                    if (response.includes(f)) response = response.split(f)[0];
                 }
                 return response.trim();
-            }''')
-            return text or ""
-        except Exception as e:
-            logger.debug(f"Extraction error: {e}")
-            return ""
+            }''') or ""
 
-    async def _is_streaming_active(self) -> bool:
-        """Checks if ChatGPT is currently generating/streaming a response."""
-        if not self.page:
-            return False
+            if is_streaming or len(current_text) > 0:
+                streaming_began = True
+
+            if len(current_text) > len(previous_text):
+                delta = current_text[len(previous_text):]
+                previous_text = current_text
+                idle_cycles = 0
+                yield delta
+            else:
+                idle_cycles += 1
+
+            if streaming_began and not is_streaming and idle_cycles >= 3:
+                await asyncio.sleep(0.3)
+                final_text = await self.page_chatgpt.evaluate('() => document.body.innerText') # fallback check
+                self.log(f"ChatGPT stream complete! ({len(previous_text)} chars)")
+                break
+
+            if not streaming_began and idle_cycles > 40:
+                self.log("ChatGPT: No activity detected after prompt.", "WARNING")
+                break
+
+    # ------------------ Gemini Automation ------------------
+
+    async def _get_gemini_composer(self):
+        selectors = [
+            "rich-textarea .ql-editor",
+            "div[contenteditable='true']",
+            "div.ql-editor",
+            "rich-textarea textarea",
+            "rich-textarea"
+        ]
+        for sel in selectors:
+            try:
+                el = await self.page_gemini.query_selector(sel)
+                if el and await el.is_visible():
+                    return el
+            except Exception:
+                pass
         try:
-            return await self.page.evaluate('''() => {
-                const stopBtn = document.querySelector('button[aria-label*="Stop"], button[data-testid*="stop"]');
+            return await self.page_gemini.wait_for_selector(", ".join(selectors), timeout=8000, state="visible")
+        except Exception:
+            return None
+
+    async def _stream_gemini(self, prompt: str, new_chat: bool) -> AsyncGenerator[str, None]:
+        if not self.page_gemini or self.page_gemini.is_closed():
+            self.page_gemini = await self.context.new_page()
+            await self.page_gemini.goto(config.GEMINI_URL, wait_until="networkidle")
+
+        if new_chat:
+            self.log("Gemini: starting new chat...")
+            try:
+                new_btn = await self.page_gemini.query_selector("a[href='/app'], button[aria-label*='New chat' i], button:has-text('New chat')")
+                if new_btn and await new_btn.is_visible():
+                    await new_btn.click()
+                else:
+                    await self.page_gemini.goto(config.GEMINI_URL, wait_until="domcontentloaded")
+                await asyncio.sleep(0.8)
+            except Exception:
+                pass
+
+        composer = await self._get_gemini_composer()
+        if not composer:
+            await self.page_gemini.goto(config.GEMINI_URL, wait_until="networkidle")
+            composer = await self._get_gemini_composer()
+            if not composer:
+                raise RuntimeError("Could not find Google Gemini input composer.")
+
+        self.log(f"Gemini: sending prompt ({len(prompt)} chars)...")
+        await composer.click()
+
+        # Fast injection into Quill editor for Gemini
+        await self.page_gemini.evaluate('''(text) => {
+            const el = document.querySelector('rich-textarea .ql-editor, div.ql-editor, [contenteditable="true"]');
+            if (el) {
+                el.focus();
+                el.innerText = text;
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+        }''', prompt)
+        await asyncio.sleep(0.3)
+
+        # Click send or press Enter
+        send_btn = await self.page_gemini.query_selector("button[aria-label*='Send' i], button[aria-label*='Submit' i], button.send-button")
+        if send_btn and await send_btn.is_visible():
+            await send_btn.click()
+        else:
+            await self.page_gemini.keyboard.press("Enter")
+
+        self.log("Gemini: prompt submitted. Streaming response...")
+        previous_text = ""
+        start_time = time.time()
+        timeout = config.REQUEST_TIMEOUT
+        streaming_began = False
+        idle_cycles = 0
+
+        while time.time() - start_time < timeout:
+            await asyncio.sleep(config.STREAM_POLL_INTERVAL)
+            is_streaming = await self.page_gemini.evaluate('''() => {
+                const stopBtn = document.querySelector('button[aria-label*="Stop" i], button.stop-button');
                 return !!stopBtn;
             }''')
-        except Exception:
-            return False
 
-    async def new_chat(self):
-        """Navigates to a new chat conversation."""
-        if not self.page:
-            return
-        self.log("Opening new chat conversation...")
-        try:
-            new_btn = await self.page.query_selector("a[href='/'], button[aria-label*='New chat'], button:has-text('New chat')")
-            if new_btn and await new_btn.is_visible():
-                await new_btn.click()
+            current_text = await self.page_gemini.evaluate('''() => {
+                const responses = Array.from(document.querySelectorAll('message-content, .model-response-text, .response-container-content, model-response'));
+                if (responses.length > 0) {
+                    return responses[responses.length - 1].innerText || '';
+                }
+                return '';
+            }''') or ""
+
+            if is_streaming or len(current_text) > 0:
+                streaming_began = True
+
+            if len(current_text) > len(previous_text):
+                delta = current_text[len(previous_text):]
+                previous_text = current_text
+                idle_cycles = 0
+                yield delta
             else:
-                await self.page.goto(config.CHATGPT_URL, wait_until="domcontentloaded")
-            await asyncio.sleep(1)
-            await self._dismiss_dialogs()
-        except Exception as e:
-            self.log(f"Error resetting new chat: {e}", "WARNING")
+                idle_cycles += 1
+
+            if streaming_began and not is_streaming and idle_cycles >= 3:
+                self.log(f"Gemini stream complete! ({len(previous_text)} chars)")
+                break
+
+            if not streaming_began and idle_cycles > 40:
+                self.log("Gemini: No activity detected after prompt.", "WARNING")
+                break
+
+    # ------------------ Unified Dispatcher ------------------
+
+    async def new_chat(self, provider: str = "both"):
+        """Resets conversation for specified provider or both."""
+        if provider in ("chatgpt", "both") and self.page_chatgpt:
+            try:
+                await self.page_chatgpt.goto(config.CHATGPT_URL, wait_until="domcontentloaded")
+            except Exception:
+                pass
+        if provider in ("gemini", "both") and self.page_gemini:
+            try:
+                await self.page_gemini.goto(config.GEMINI_URL, wait_until="domcontentloaded")
+            except Exception:
+                pass
 
     async def send_chat_completion(
         self,
         prompt: str,
+        model: str = "gpt-4o",
+        provider: Optional[str] = None,
         new_chat: bool = True
     ) -> str:
         """Non-streaming chat completion."""
         full_text = ""
-        async for chunk in self.stream_chat_completion(prompt, new_chat=new_chat):
+        async for chunk in self.stream_chat_completion(
+            prompt=prompt,
+            model=model,
+            provider=provider,
+            new_chat=new_chat
+        ):
             full_text += chunk
         return full_text
 
     async def stream_chat_completion(
         self,
         prompt: str,
+        model: str = "gpt-4o",
+        provider: Optional[str] = None,
         new_chat: bool = True
     ) -> AsyncGenerator[str, None]:
-        """Streaming chat completion generator that yields text delta chunks."""
+        """Unified streaming generator routing to ChatGPT or Gemini."""
         async with self._lock:
             self._is_busy = True
             try:
-                if not self._initialized or not self.page or self.page.is_closed():
+                if not self._initialized or not self.context:
                     await self._start_browser()
 
-                if new_chat:
-                    await self.new_chat()
+                chosen_provider = self.resolve_provider(model, provider)
+                self.log(f"Routing request to provider: [{chosen_provider.upper()}] (Model: {model})")
 
-                composer = await self._get_composer()
-                if not composer:
-                    self.log("Composer not found. Refreshing page...", "WARNING")
-                    await self.page.goto(config.CHATGPT_URL, wait_until="networkidle")
-                    await self._dismiss_dialogs()
-                    composer = await self._get_composer()
-                    if not composer:
-                        raise RuntimeError("Unable to locate ChatGPT prompt composer on page.")
-
-                self.log(f"Sending prompt to ChatGPT ({len(prompt)} chars)...")
-                await composer.click()
-                await composer.fill(prompt)
-                await asyncio.sleep(0.3)
-
-                # Send button
-                send_btn = await self.page.query_selector(
-                    "button[aria-label*='Send message'], button[aria-label*='Send'], button[data-testid='send-button']"
-                )
-                if send_btn and await send_btn.is_visible():
-                    await send_btn.click()
+                if chosen_provider == "gemini":
+                    async for chunk in self._stream_gemini(prompt, new_chat):
+                        yield chunk
                 else:
-                    await self.page.keyboard.press("Enter")
-
-                self.log("Prompt submitted. Streaming response...")
-                
-                previous_text = ""
-                start_time = time.time()
-                timeout = config.REQUEST_TIMEOUT
-                streaming_began = False
-                idle_cycles = 0
-
-                while time.time() - start_time < timeout:
-                    await asyncio.sleep(config.STREAM_POLL_INTERVAL)
-                    is_streaming = await self._is_streaming_active()
-                    current_text = await self._extract_current_response()
-
-                    if is_streaming or len(current_text) > 0:
-                        streaming_began = True
-
-                    # Calculate new chunk delta
-                    if len(current_text) > len(previous_text):
-                        delta = current_text[len(previous_text):]
-                        previous_text = current_text
-                        idle_cycles = 0
-                        yield delta
-                    else:
-                        idle_cycles += 1
-
-                    # Check if finished
-                    if streaming_began and not is_streaming and idle_cycles >= 3:
-                        # Extra check to ensure any last characters are captured
-                        await asyncio.sleep(0.4)
-                        final_text = await self._extract_current_response()
-                        if len(final_text) > len(previous_text):
-                            yield final_text[len(previous_text):]
-                        self.log(f"Stream complete! Total response length: {len(final_text or previous_text)} chars.")
-                        break
-
-                    # Guard against infinite stall
-                    if not streaming_began and idle_cycles > 40: # 8 seconds with zero activity
-                        self.log("Warning: No streaming activity detected after prompt.", "WARNING")
-                        break
+                    async for chunk in self._stream_chatgpt(prompt, new_chat):
+                        yield chunk
 
             except Exception as e:
-                self.log(f"Exception during chat execution: {str(e)}", "ERROR")
+                self.log(f"Exception during completion: {str(e)}", "ERROR")
                 raise
             finally:
                 self._is_busy = False
@@ -452,9 +617,10 @@ class ChatGPTBrowserBridge:
                 logger.error(f"Error closing browser: {e}")
             finally:
                 self.context = None
-                self.page = None
+                self.page_chatgpt = None
+                self.page_gemini = None
                 self.playwright = None
                 self._initialized = False
 
-# Global singleton bridge instance
-bridge = ChatGPTBrowserBridge()
+# Global singleton
+bridge = BrowserBridge()

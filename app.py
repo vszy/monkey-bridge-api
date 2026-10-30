@@ -88,14 +88,14 @@ async def health_check():
 
 @app.get("/api/account")
 async def get_account_info():
-    """Returns detailed ChatGPT account status (Guest vs Logged In)."""
-    return await bridge.update_account_info()
+    """Returns detailed ChatGPT and Google Gemini account status."""
+    return await bridge.update_all_accounts()
 
 @app.post("/api/new-chat")
-async def api_new_chat():
+async def api_new_chat(provider: str = "both"):
     """Manually resets the browser to a clean new chat."""
-    await bridge.new_chat()
-    return {"status": "success", "message": "New chat initialized."}
+    await bridge.new_chat(provider=provider)
+    return {"status": "success", "message": f"New chat initialized for {provider}."}
 
 @app.post("/api/restart-browser")
 async def api_restart_browser():
@@ -119,7 +119,7 @@ async def get_model(model_id: str):
         "id": model_id,
         "object": "model",
         "created": 1715367049,
-        "owned_by": "openai"
+        "owned_by": "openai" if not "gemini" in model_id.lower() else "google"
     }
 
 @app.post("/v1/chat/completions")
@@ -146,6 +146,8 @@ async def chat_completions(req: ChatCompletionRequest):
             try:
                 async for text_delta in bridge.stream_chat_completion(
                     prompt=prompt,
+                    model=model_name,
+                    provider=req.provider,
                     new_chat=req.new_chat
                 ):
                     delta_data = ChatCompletionChunkDelta(
@@ -203,6 +205,8 @@ async def chat_completions(req: ChatCompletionRequest):
     try:
         completion_text = await bridge.send_chat_completion(
             prompt=prompt,
+            model=model_name,
+            provider=req.provider,
             new_chat=req.new_chat
         )
         

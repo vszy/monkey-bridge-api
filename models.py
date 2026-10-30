@@ -20,6 +20,7 @@ class ChatCompletionRequest(BaseModel):
     presence_penalty: Optional[float] = 0.0
     frequency_penalty: Optional[float] = 0.0
     # Optional parameters for custom session control
+    provider: Optional[str] = None  # "chatgpt" or "gemini"
     new_chat: Optional[bool] = False
     conversation_id: Optional[str] = None
 
