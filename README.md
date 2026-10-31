@@ -197,20 +197,6 @@ In your application's settings, configure a custom OpenAI provider:
 - **API Key**: `any-string` (e.g. `sk-monkey-bridge`)
 - **Available Models**: `gpt-4o`, `gpt-4o-mini`, `chatgpt-web`, `o1-preview`
 
----
-
-### Aider (Terminal AI Pair Programmer)
-
-Aider works seamlessly with Monkey Bridge by streaming code diffs directly into your repository:
-
-- **One-click launcher**:
-  ```text
-  run_aider.bat
-  ```
-- **Manual launch**:
-  ```bash
-  aider --openai-api-base http://localhost:8000/v1 --model openai/gpt-4o --no-stream
-  ```
 
 ---
 
